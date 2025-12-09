@@ -1,0 +1,31 @@
+# AWS Region
+aws_region = "eu-west-1"
+
+# Project configuration
+project_name = "certbot-lambda"
+environment  = "prod"
+
+# Let's Encrypt configuration
+acme_email = "admin@example.com"
+domains    = ["example.com", "*.example.com"]
+
+# Route53 Hosted Zone ID
+hosted_zone_id = "Z1234567890ABC"
+
+# Use staging environment for testing (set to false for production)
+use_staging = true
+
+# Renewal configuration
+renewal_days_before_expiry = 30
+
+# Check schedule (every 12 hours)
+schedule_expression = "rate(12 hours)"
+
+# Notifications
+enable_notifications = true
+notification_email   = "admin@example.com"
+
+# Additional tags
+tags = {
+  Owner = "DevOps"
+}
