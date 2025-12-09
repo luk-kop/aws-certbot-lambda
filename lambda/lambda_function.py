@@ -3,6 +3,7 @@ import logging
 import os
 import time
 from datetime import datetime, timedelta, timezone
+from functools import wraps
 from typing import Optional
 
 import boto3
@@ -16,13 +17,31 @@ from josepy import JWKRSA
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
+
+def retry_with_backoff(max_attempts=3, base_delay=5, exceptions=(Exception,)):
+    """Decorator for retry with exponential backoff."""
+    def decorator(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            for attempt in range(1, max_attempts + 1):
+                try:
+                    return func(*args, **kwargs)
+                except exceptions as e:
+                    if attempt == max_attempts:
+                        raise
+                    delay = base_delay * (2 ** (attempt - 1))
+                    logger.warning(f"{func.__name__} failed (attempt {attempt}/{max_attempts}): {e}. Retrying in {delay}s")
+                    time.sleep(delay)
+        return wrapper
+    return decorator
+
 ACME_DIRECTORY_URL = os.environ.get(
     "ACME_DIRECTORY_URL", "https://acme-v02.api.letsencrypt.org/directory"
 )
 ACME_EMAIL = os.environ["ACME_EMAIL"]
 DOMAINS = os.environ["DOMAINS"].split(",")
 HOSTED_ZONE_ID = os.environ["HOSTED_ZONE_ID"]
-SECRET_NAME = os.environ["SECRET_NAME"]
+SECRET_NAME_PREFIX = os.environ["SECRET_NAME_PREFIX"]
 RENEWAL_DAYS_BEFORE_EXPIRY = int(os.environ.get("RENEWAL_DAYS_BEFORE_EXPIRY", "30"))
 SNS_TOPIC_ARN = os.environ.get("SNS_TOPIC_ARN", "")
 
@@ -40,32 +59,36 @@ class CertificateManager:
 
     def _get_or_create_account_key(self) -> JWKRSA:
         """Get existing account key from Secrets Manager or create new one."""
-        account_secret_name = f"{SECRET_NAME}-account-key"
+        account_secret_name = f"{SECRET_NAME_PREFIX}-account-key"
 
         try:
             response = secrets_client.get_secret_value(SecretId=account_secret_name)
-            key_pem = response["SecretString"]
+            key_pem = response.get("SecretString", "")
+            if not key_pem:
+                raise ValueError("Secret value is empty")
             private_key = serialization.load_pem_private_key(
                 key_pem.encode(), password=None, backend=default_backend()
             )
             logger.info("Loaded existing ACME account key")
+            return JWKRSA(key=private_key)
         except secrets_client.exceptions.ResourceNotFoundException:
             logger.info("Creating new ACME account key")
-            private_key = rsa.generate_private_key(
-                public_exponent=65537, key_size=2048, backend=default_backend()
-            )
-            key_pem = private_key.private_bytes(
-                encoding=serialization.Encoding.PEM,
-                format=serialization.PrivateFormat.PKCS8,
-                encryption_algorithm=serialization.NoEncryption(),
-            ).decode()
+        except (ValueError, TypeError, UnicodeDecodeError) as e:
+            logger.warning(f"Invalid account key, generating new one: {e}")
 
-            secrets_client.create_secret(
-                Name=account_secret_name,
-                SecretString=key_pem,
-                Description="ACME account private key for Let's Encrypt",
-            )
+        private_key = rsa.generate_private_key(
+            public_exponent=65537, key_size=2048, backend=default_backend()
+        )
+        key_pem = private_key.private_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PrivateFormat.PKCS8,
+            encryption_algorithm=serialization.NoEncryption(),
+        ).decode()
 
+        secrets_client.put_secret_value(
+            SecretId=account_secret_name,
+            SecretString=key_pem,
+        )
         return JWKRSA(key=private_key)
 
     def _register_account(self) -> client.ClientV2:
@@ -125,6 +148,7 @@ class CertificateManager:
 
         return private_key_pem, csr.public_bytes(serialization.Encoding.DER)
 
+    @retry_with_backoff(max_attempts=3, base_delay=10, exceptions=(Exception,))
     def _create_dns_record(self, domain: str, validation: str) -> str:
         """Create DNS TXT record for ACME challenge."""
         record_name = f"_acme-challenge.{domain}"
@@ -255,8 +279,19 @@ class CertificateManager:
             )
 
             # Get certificate
-            certificate_pem = order.fullchain_pem
+            fullchain_pem = order.fullchain_pem
             logger.info("Certificate obtained successfully")
+
+            # Parse certificate to extract expiry and separate chain
+            certs = fullchain_pem.split("-----END CERTIFICATE-----")
+            certificate = certs[0] + "-----END CERTIFICATE-----\n"
+            chain = "-----END CERTIFICATE-----".join(certs[1:]).strip()
+            if chain:
+                chain = chain + "\n"
+
+            # Extract expiry from certificate
+            cert = x509.load_pem_x509_certificate(certificate.encode(), default_backend())
+            expiry = cert.not_valid_after_utc.isoformat()
 
         finally:
             # Cleanup DNS records
@@ -265,32 +300,27 @@ class CertificateManager:
 
         return {
             "private_key": private_key_pem.decode(),
-            "certificate": certificate_pem,
+            "certificate": certificate,
+            "chain": chain,
+            "fullchain": fullchain_pem,
+            "expiry": expiry,
             "domains": domains,
             "obtained_at": datetime.now(timezone.utc).isoformat(),
         }
 
+    @retry_with_backoff(max_attempts=2, base_delay=3, exceptions=(Exception,))
     def store_certificate(self, cert_data: dict) -> None:
         """Store certificate in Secrets Manager."""
+        secret_name = f"{SECRET_NAME_PREFIX}-certificate"
         secret_value = json.dumps(cert_data)
-
-        try:
-            secrets_client.update_secret(
-                SecretId=SECRET_NAME, SecretString=secret_value
-            )
-            logger.info(f"Updated certificate in {SECRET_NAME}")
-        except secrets_client.exceptions.ResourceNotFoundException:
-            secrets_client.create_secret(
-                Name=SECRET_NAME,
-                SecretString=secret_value,
-                Description=f"TLS certificate for {', '.join(cert_data['domains'])}",
-            )
-            logger.info(f"Created certificate secret {SECRET_NAME}")
+        secrets_client.put_secret_value(SecretId=secret_name, SecretString=secret_value)
+        logger.info(f"Stored certificate in {secret_name}")
 
     def get_current_certificate(self) -> Optional[dict]:
         """Get current certificate from Secrets Manager."""
+        secret_name = f"{SECRET_NAME_PREFIX}-certificate"
         try:
-            response = secrets_client.get_secret_value(SecretId=SECRET_NAME)
+            response = secrets_client.get_secret_value(SecretId=secret_name)
             return json.loads(response["SecretString"])
         except secrets_client.exceptions.ResourceNotFoundException:
             return None
@@ -300,7 +330,18 @@ class CertificateManager:
         if not cert_data:
             return True
 
-        cert_pem = cert_data.get("certificate")
+        # Try to use stored expiry first
+        if "expiry" in cert_data:
+            try:
+                expiry = datetime.fromisoformat(cert_data["expiry"].replace("Z", "+00:00"))
+                days_until_expiry = (expiry - datetime.now(timezone.utc)).days
+                logger.info(f"Certificate expires in {days_until_expiry} days")
+                return days_until_expiry <= RENEWAL_DAYS_BEFORE_EXPIRY
+            except (ValueError, KeyError):
+                pass
+
+        # Fallback to parsing certificate
+        cert_pem = cert_data.get("certificate") or cert_data.get("fullchain")
         if not cert_pem:
             return True
 

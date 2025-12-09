@@ -1,4 +1,4 @@
-data "aws_iam_policy_document" "lambda_assume_role" {
+data "aws_iam_policy_document" "assume_role" {
   statement {
     effect = "Allow"
     principals {
@@ -9,12 +9,12 @@ data "aws_iam_policy_document" "lambda_assume_role" {
   }
 }
 
-resource "aws_iam_role" "lambda" {
+resource "aws_iam_role" "this" {
   name               = "${local.function_name}-role"
-  assume_role_policy = data.aws_iam_policy_document.lambda_assume_role.json
+  assume_role_policy = data.aws_iam_policy_document.assume_role.json
 }
 
-data "aws_iam_policy_document" "lambda_permissions" {
+data "aws_iam_policy_document" "this" {
   # CloudWatch Logs
   statement {
     effect = "Allow"
@@ -36,7 +36,8 @@ data "aws_iam_policy_document" "lambda_permissions" {
       "secretsmanager:PutSecretValue"
     ]
     resources = [
-      "arn:aws:secretsmanager:${var.region}:*:secret:${local.secret_name}*"
+      aws_secretsmanager_secret.certificate.arn,
+      aws_secretsmanager_secret.account_key.arn
     ]
   }
 
@@ -72,8 +73,8 @@ data "aws_iam_policy_document" "lambda_permissions" {
   }
 }
 
-resource "aws_iam_role_policy" "lambda" {
+resource "aws_iam_role_policy" "this" {
   name   = "${local.function_name}-policy"
-  role   = aws_iam_role.lambda.id
-  policy = data.aws_iam_policy_document.lambda_permissions.json
+  role   = aws_iam_role.this.id
+  policy = data.aws_iam_policy_document.this.json
 }

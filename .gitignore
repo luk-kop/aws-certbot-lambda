@@ -15,6 +15,7 @@ venv/
 *.tfstate
 *.tfstate.*
 .terraform.lock.hcl
+terraform.tfvars
 
 # Environment
 .env

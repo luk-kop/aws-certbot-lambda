@@ -17,8 +17,9 @@ variable "environment" {
 }
 
 variable "acme_email" {
-  description = "Email address for Let's Encrypt account registration"
+  description = "Email address for Let's Encrypt account registration (optional but recommended)"
   type        = string
+  default     = ""
 }
 
 variable "domains" {
@@ -52,7 +53,7 @@ variable "schedule_expression" {
 variable "enable_notifications" {
   description = "Enable SNS notifications for certificate events"
   type        = bool
-  default     = true
+  default     = false
 }
 
 variable "notification_email" {
@@ -65,4 +66,10 @@ variable "additional_tags" {
   description = "Additional tags to set for all resources"
   type        = map(string)
   default     = {}
+}
+
+variable "python_runtime" {
+  description = "Python runtime version for Lambda"
+  type        = string
+  default     = "python3.11"
 }
