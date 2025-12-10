@@ -60,6 +60,7 @@ jobs:
   python-test:
     name: Python Tests
     runs-on: ubuntu-latest
+    if: hashFiles('tests/**') != ''
     steps:
       - name: Check-out code
         uses: actions/checkout@v4
