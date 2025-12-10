@@ -73,3 +73,19 @@ variable "python_runtime" {
   type        = string
   default     = "python3.11"
 }
+
+variable "lambda_architecture" {
+  description = "Lambda function architecture"
+  type        = string
+  default     = "x86_64"
+  validation {
+    condition     = contains(["x86_64", "arm64"], var.lambda_architecture)
+    error_message = "Lambda architecture must be either x86_64 or arm64."
+  }
+}
+
+variable "lambda_layer_powertools_version" {
+  description = "AWS Lambda Powertools layer version"
+  type        = number
+  default     = 18
+}

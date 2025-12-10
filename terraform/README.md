@@ -14,8 +14,8 @@
 
 | Name | Version |
 |------|---------|
-| <a name="provider_archive"></a> [archive](#provider\_archive) | >= 2.0 |
-| <a name="provider_aws"></a> [aws](#provider\_aws) | ~> 6.0 |
+| <a name="provider_archive"></a> [archive](#provider\_archive) | 2.7.1 |
+| <a name="provider_aws"></a> [aws](#provider\_aws) | 6.25.0 |
 | <a name="provider_terraform"></a> [terraform](#provider\_terraform) | n/a |
 
 ## Modules
@@ -53,6 +53,8 @@ No modules.
 | <a name="input_enable_notifications"></a> [enable\_notifications](#input\_enable\_notifications) | Enable SNS notifications for certificate events | `bool` | `false` | no |
 | <a name="input_environment"></a> [environment](#input\_environment) | Environment name (e.g., prod, staging) | `string` | `"dev"` | no |
 | <a name="input_hosted_zone_id"></a> [hosted\_zone\_id](#input\_hosted\_zone\_id) | Route53 Hosted Zone ID for DNS challenges | `string` | n/a | yes |
+| <a name="input_lambda_architecture"></a> [lambda\_architecture](#input\_lambda\_architecture) | Lambda function architecture | `string` | `"x86_64"` | no |
+| <a name="input_lambda_layer_powertools_version"></a> [lambda\_layer\_powertools\_version](#input\_lambda\_layer\_powertools\_version) | AWS Lambda Powertools layer version | `number` | `18` | no |
 | <a name="input_notification_email"></a> [notification\_email](#input\_notification\_email) | Email address for certificate notifications | `string` | `""` | no |
 | <a name="input_project_name"></a> [project\_name](#input\_project\_name) | Project name used for resource naming | `string` | `"aws-certbot-lambda"` | no |
 | <a name="input_python_runtime"></a> [python\_runtime](#input\_python\_runtime) | Python runtime version for Lambda | `string` | `"python3.11"` | no |

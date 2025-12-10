@@ -19,9 +19,10 @@ resource "terraform_data" "lambda_layer" {
 }
 
 resource "aws_lambda_layer_version" "this" {
-  filename            = "${path.module}/../lambda/layer.zip"
-  layer_name          = "${local.function_name}-dependencies"
-  compatible_runtimes = [var.python_runtime]
+  filename                 = "${path.module}/../lambda/layer.zip"
+  layer_name               = "${local.function_name}-dependencies"
+  compatible_runtimes      = [var.python_runtime]
+  compatible_architectures = ["x86_64", "arm64"]
 
   depends_on = [terraform_data.lambda_layer]
 }
@@ -39,6 +40,7 @@ data "archive_file" "lambda" {
 resource "aws_lambda_function" "this" {
   filename         = data.archive_file.lambda.output_path
   function_name    = local.function_name
+  architectures    = [var.lambda_architecture]
   role             = aws_iam_role.this.arn
   handler          = "lambda_function.lambda_handler"
   source_code_hash = data.archive_file.lambda.output_base64sha256
@@ -46,7 +48,10 @@ resource "aws_lambda_function" "this" {
   timeout          = 300
   memory_size      = 256
 
-  layers = [aws_lambda_layer_version.this.arn]
+  layers = [
+    aws_lambda_layer_version.this.arn,
+    "arn:aws:lambda:${var.region}:017000801446:layer:AWSLambdaPowertoolsPythonV3-${replace(var.python_runtime, ".", "")}-${var.lambda_architecture}:${var.lambda_layer_powertools_version}"
+  ]
 
   environment {
     variables = {
@@ -57,6 +62,7 @@ resource "aws_lambda_function" "this" {
       SECRET_NAME_PREFIX         = local.secret_name_prefix
       RENEWAL_DAYS_BEFORE_EXPIRY = tostring(var.renewal_days_before_expiry)
       SNS_TOPIC_ARN              = var.enable_notifications ? aws_sns_topic.notifications[0].arn : ""
+      POWERTOOLS_SERVICE_NAME    = var.project_name
     }
   }
 

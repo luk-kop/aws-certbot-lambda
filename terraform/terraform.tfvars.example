@@ -1,8 +1,8 @@
 # AWS Region
-aws_region = "eu-west-1"
+region = "eu-west-1"
 
 # Project configuration
-project_name = "certbot-lambda"
+project_name = "aws-certbot-lambda"
 environment  = "prod"
 
 # Let's Encrypt configuration
@@ -26,6 +26,6 @@ enable_notifications = true
 notification_email   = "admin@example.com"
 
 # Additional tags
-tags = {
+additional_tags = {
   Owner = "DevOps"
 }

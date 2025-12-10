@@ -9,6 +9,7 @@ __pycache__/
 venv/
 *.egg-info/
 .ruff_cache/
+python/
 
 # Terraform
 .terraform/
@@ -19,3 +20,6 @@ terraform.tfvars
 
 # Environment
 .env
+
+# Custom
+*.zip

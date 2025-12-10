@@ -7,19 +7,22 @@ from functools import wraps
 from typing import Optional
 
 import boto3
-from acme import challenges, client, messages
+from acme import challenges, client, errors, messages
 from cryptography import x509
 from cryptography.hazmat.backends import default_backend
-from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from josepy import JWKRSA
+from aws_lambda_powertools import Logger
+from aws_lambda_powertools.utilities.typing import LambdaContext
 
-logger = logging.getLogger()
-logger.setLevel(logging.INFO)
+logger = Logger()
+logging.getLogger("botocore").setLevel(logging.WARNING)
 
 
 def retry_with_backoff(max_attempts=3, base_delay=5, exceptions=(Exception,)):
     """Decorator for retry with exponential backoff."""
+
     def decorator(func):
         @wraps(func)
         def wrapper(*args, **kwargs):
@@ -30,10 +33,15 @@ def retry_with_backoff(max_attempts=3, base_delay=5, exceptions=(Exception,)):
                     if attempt == max_attempts:
                         raise
                     delay = base_delay * (2 ** (attempt - 1))
-                    logger.warning(f"{func.__name__} failed (attempt {attempt}/{max_attempts}): {e}. Retrying in {delay}s")
+                    logger.warning(
+                        f"{func.__name__} failed (attempt {attempt}/{max_attempts}): {e}. Retrying in {delay}s"
+                    )
                     time.sleep(delay)
+
         return wrapper
+
     return decorator
+
 
 ACME_DIRECTORY_URL = os.environ.get(
     "ACME_DIRECTORY_URL", "https://acme-v02.api.letsencrypt.org/directory"
@@ -44,6 +52,9 @@ HOSTED_ZONE_ID = os.environ["HOSTED_ZONE_ID"]
 SECRET_NAME_PREFIX = os.environ["SECRET_NAME_PREFIX"]
 RENEWAL_DAYS_BEFORE_EXPIRY = int(os.environ.get("RENEWAL_DAYS_BEFORE_EXPIRY", "30"))
 SNS_TOPIC_ARN = os.environ.get("SNS_TOPIC_ARN", "")
+POWERTOOLS_SERVICE_NAME = os.environ.get(
+    "POWERTOOLS_SERVICE_NAME", "aws-certbot-lambda"
+)
 
 secrets_client = boto3.client("secretsmanager")
 route53_client = boto3.client("route53")
@@ -100,23 +111,35 @@ class CertificateManager:
         acme_client = client.ClientV2(directory, net=network)
 
         try:
-            registration = messages.NewRegistration.from_data(
-                email=ACME_EMAIL, terms_of_service_agreed=True
-            )
-            acme_client.new_account(registration)
+            reg_data = {"terms_of_service_agreed": True}
+            if ACME_EMAIL:
+                reg_data["email"] = ACME_EMAIL
+            registration = messages.NewRegistration.from_data(**reg_data)
+            regr = acme_client.new_account(registration)
             logger.info("Registered new ACME account")
-        except messages.Error as e:
-            if "already exists" in str(e).lower() or e.code == "accountDoesNotExist":
-                # Account exists, retrieve it
-                registration = messages.NewRegistration.from_data(
-                    email=ACME_EMAIL,
-                    terms_of_service_agreed=True,
-                    only_return_existing=True,
+        except errors.ConflictError as e:
+            # Account exists, get account URL from the location attribute
+            account_url = getattr(e, "location", None)
+            logger.info(f"Account exists, URL: {account_url}")
+
+            if account_url:
+                # Create registration resource manually
+                contact = tuple([f"mailto:{ACME_EMAIL}"] if ACME_EMAIL else [])
+                regr = messages.RegistrationResource(
+                    uri=account_url,
+                    body=messages.Registration(
+                        terms_of_service_agreed=True, contact=contact
+                    ),
                 )
-                acme_client.new_account(registration)
-                logger.info("Retrieved existing ACME account")
+                # Set the account on the client
+                acme_client.net.account = regr
+                logger.info(f"Using existing ACME account: {account_url}")
             else:
+                logger.error("Could not extract account URL from ConflictError")
                 raise
+        except Exception as e:
+            logger.error(f"Unexpected error in account registration: {e}")
+            raise
 
         return acme_client
 
@@ -138,7 +161,7 @@ class CertificateManager:
             )
             builder = builder.add_extension(san, critical=False)
 
-        csr = builder.sign(private_key, None, default_backend())
+        csr = builder.sign(private_key, hashes.SHA256(), default_backend())
 
         private_key_pem = private_key.private_bytes(
             encoding=serialization.Encoding.PEM,
@@ -146,7 +169,7 @@ class CertificateManager:
             encryption_algorithm=serialization.NoEncryption(),
         )
 
-        return private_key_pem, csr.public_bytes(serialization.Encoding.DER)
+        return private_key_pem, csr.public_bytes(serialization.Encoding.PEM)
 
     @retry_with_backoff(max_attempts=3, base_delay=10, exceptions=(Exception,))
     def _create_dns_record(self, domain: str, validation: str) -> str:
@@ -245,10 +268,10 @@ class CertificateManager:
         self.acme_client = self._register_account()
 
         # Generate key and CSR
-        private_key_pem, csr_der = self._generate_csr(domains)
+        private_key_pem, csr_pem = self._generate_csr(domains)
 
         # Create order
-        order = self.acme_client.new_order(csr_der)
+        order = self.acme_client.new_order(csr_pem)
         logger.info(f"Created order for domains: {domains}")
 
         # Process each authorization
@@ -260,9 +283,9 @@ class CertificateManager:
                 validations[domain] = validation
 
             # Poll for order completion
-            deadline = datetime.now(timezone.utc) + timedelta(minutes=5)
-            while datetime.now(timezone.utc) < deadline:
-                order = self.acme_client.poll_authorizations(order)
+            deadline = datetime.now() + timedelta(minutes=5)
+            while datetime.now() < deadline:
+                order = self.acme_client.poll_authorizations(order, deadline)
 
                 # Check if all authorizations are valid
                 all_valid = all(
@@ -275,7 +298,7 @@ class CertificateManager:
 
             # Finalize order
             order = self.acme_client.finalize_order(
-                order, deadline=datetime.now(timezone.utc) + timedelta(minutes=2)
+                order, deadline=datetime.now() + timedelta(minutes=2)
             )
 
             # Get certificate
@@ -290,7 +313,9 @@ class CertificateManager:
                 chain = chain + "\n"
 
             # Extract expiry from certificate
-            cert = x509.load_pem_x509_certificate(certificate.encode(), default_backend())
+            cert = x509.load_pem_x509_certificate(
+                certificate.encode(), default_backend()
+            )
             expiry = cert.not_valid_after_utc.isoformat()
 
         finally:
@@ -333,7 +358,9 @@ class CertificateManager:
         # Try to use stored expiry first
         if "expiry" in cert_data:
             try:
-                expiry = datetime.fromisoformat(cert_data["expiry"].replace("Z", "+00:00"))
+                expiry = datetime.fromisoformat(
+                    cert_data["expiry"].replace("Z", "+00:00")
+                )
                 days_until_expiry = (expiry - datetime.now(timezone.utc)).days
                 logger.info(f"Certificate expires in {days_until_expiry} days")
                 return days_until_expiry <= RENEWAL_DAYS_BEFORE_EXPIRY
@@ -368,7 +395,8 @@ def send_notification(subject: str, message: str) -> None:
             logger.error(f"Failed to send notification: {e}")
 
 
-def lambda_handler(event: dict, context) -> dict:
+@logger.inject_lambda_context(log_event=True)
+def lambda_handler(event: dict, context: LambdaContext) -> dict:
     """Lambda entry point."""
     logger.info(f"Starting certificate check/renewal for domains: {DOMAINS}")
 

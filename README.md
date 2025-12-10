@@ -172,10 +172,19 @@ terraform apply
 
 ## Usage
 
+### Invoke Lambda without force certificate renewal
+
+```bash
+aws lambda invoke --function-name aws-certbot-lambda-prod \
+  --cli-binary-format raw-in-base64-out \
+  --payload '{"force_renewal": false}' response.json
+```
+
 ### Force certificate renewal
 
 ```bash
 aws lambda invoke --function-name aws-certbot-lambda-prod \
+  --cli-binary-format raw-in-base64-out \
   --payload '{"force_renewal": true}' response.json
 ```
 
