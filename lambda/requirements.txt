@@ -1,0 +1,4 @@
+acme~=5.2
+cryptography~=46.0
+josepy~=2.2
+boto3~=1.42

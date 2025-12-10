@@ -1,0 +1,25 @@
+# IDE
+.idea/
+
+# Python
+__pycache__/
+*.py[cod]
+*.so
+.venv/
+venv/
+*.egg-info/
+.ruff_cache/
+python/
+
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+.terraform.lock.hcl
+terraform.tfvars
+
+# Environment
+.env
+
+# Custom
+*.zip

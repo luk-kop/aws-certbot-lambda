@@ -1,0 +1,24 @@
+Workflows:
+- changed-files:
+  - any-glob-to-any-file: .github/workflows/**
+
+Documentation:
+- changed-files:
+  - any-glob-to-any-file: images/**
+  - any-glob-to-any-file: '**/*.md'
+
+Terraform:
+- changed-files:
+  - any-glob-to-any-file: terraform/**
+
+Lambda:
+- changed-files:
+  - any-glob-to-any-file: lambda/**
+
+Pytest:
+- changed-files:
+  - any-glob-to-any-file: tests/**
+
+Python:
+- changed-files:
+  - - any-glob-to-any-file: '**/*.py'
