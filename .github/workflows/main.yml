@@ -16,6 +16,7 @@ on:
 
 env:
   PYTHON_VERSION: '3.11'
+  PYTHON_DIR: 'lambda'
   RUFF_VERSION: '0.14.8'
   TF_VERSION: '1.12.1'
   TF_LINT_VERSION: 'latest'
@@ -42,6 +43,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           pip install -r requirements-dev.txt
+        working-directory: ${{ env.PYTHON_DIR }}
 
       - name: Ruff check (linter)
         uses: astral-sh/ruff-action@v3
@@ -73,13 +75,14 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           pip install -r requirements-dev.txt
+        working-directory: ${{ env.PYTHON_DIR }}
 
       - name: Run tests with pytest
         env:
           AWS_DEFAULT_REGION: 'us-east-1'
         run: |
           pytest tests/ \
-            --cov=lambda_functions \
+            --cov=lambda \
             --cov=new_stake_script \
             --cov-report=xml \
             --cov-report=html \
