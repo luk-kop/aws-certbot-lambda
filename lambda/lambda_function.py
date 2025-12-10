@@ -21,7 +21,14 @@ logging.getLogger("botocore").setLevel(logging.WARNING)
 
 
 def retry_with_backoff(max_attempts=3, base_delay=5, exceptions=(Exception,)):
-    """Decorator for retry with exponential backoff."""
+    """
+    Decorator that retries function calls with exponential backoff.
+
+    Args:
+        max_attempts: Maximum number of retry attempts
+        base_delay: Base delay in seconds between retries
+        exceptions: Tuple of exception types to catch and retry
+    """
 
     def decorator(func):
         @wraps(func)
@@ -46,7 +53,7 @@ def retry_with_backoff(max_attempts=3, base_delay=5, exceptions=(Exception,)):
 ACME_DIRECTORY_URL = os.environ.get(
     "ACME_DIRECTORY_URL", "https://acme-v02.api.letsencrypt.org/directory"
 )
-ACME_EMAIL = os.environ["ACME_EMAIL"]
+ACME_EMAIL = os.environ.get("ACME_EMAIL", "")
 DOMAINS = os.environ["DOMAINS"].split(",")
 HOSTED_ZONE_ID = os.environ["HOSTED_ZONE_ID"]
 SECRET_NAME_PREFIX = os.environ["SECRET_NAME_PREFIX"]
@@ -56,24 +63,36 @@ POWERTOOLS_SERVICE_NAME = os.environ.get(
     "POWERTOOLS_SERVICE_NAME", "aws-certbot-lambda"
 )
 
-secrets_client = boto3.client("secretsmanager")
-route53_client = boto3.client("route53")
-sns_client = boto3.client("sns") if SNS_TOPIC_ARN else None
-
 
 class CertificateManager:
-    """Manages ACME certificate operations."""
+    """
+    Handles Let's Encrypt certificate lifecycle operations via ACME protocol.
+
+    Manages certificate issuance, renewal, and storage using Route53 DNS-01 challenges
+    and AWS Secrets Manager for certificate persistence.
+    """
+
+    secrets_client = boto3.client("secretsmanager")
+    route53_client = boto3.client("route53")
+    sns_client = boto3.client("sns") if SNS_TOPIC_ARN else None
 
     def __init__(self):
         self.acme_client: Optional[client.ClientV2] = None
         self.account_key = self._get_or_create_account_key()
 
     def _get_or_create_account_key(self) -> JWKRSA:
-        """Get existing account key from Secrets Manager or create new one."""
+        """
+        Retrieve or generate ACME account key for Let's Encrypt registration.
+
+        Returns:
+            JWKRSA: JSON Web Key for ACME account authentication
+        """
         account_secret_name = f"{SECRET_NAME_PREFIX}-account-key"
 
         try:
-            response = secrets_client.get_secret_value(SecretId=account_secret_name)
+            response = self.secrets_client.get_secret_value(
+                SecretId=account_secret_name
+            )
             key_pem = response.get("SecretString", "")
             if not key_pem:
                 raise ValueError("Secret value is empty")
@@ -82,7 +101,7 @@ class CertificateManager:
             )
             logger.info("Loaded existing ACME account key")
             return JWKRSA(key=private_key)
-        except secrets_client.exceptions.ResourceNotFoundException:
+        except self.secrets_client.exceptions.ResourceNotFoundException:
             logger.info("Creating new ACME account key")
         except (ValueError, TypeError, UnicodeDecodeError) as e:
             logger.warning(f"Invalid account key, generating new one: {e}")
@@ -96,14 +115,19 @@ class CertificateManager:
             encryption_algorithm=serialization.NoEncryption(),
         ).decode()
 
-        secrets_client.put_secret_value(
+        self.secrets_client.put_secret_value(
             SecretId=account_secret_name,
             SecretString=key_pem,
         )
         return JWKRSA(key=private_key)
 
     def _register_account(self) -> client.ClientV2:
-        """Register or retrieve ACME account."""
+        """
+        Register new ACME account or retrieve existing one from Let's Encrypt.
+
+        Returns:
+            client.ClientV2: Configured ACME client with registered account
+        """
         network = client.ClientNetwork(
             self.account_key, user_agent="aws-certbot-lambda/1.0"
         )
@@ -144,7 +168,15 @@ class CertificateManager:
         return acme_client
 
     def _generate_csr(self, domains: list[str]) -> tuple[bytes, bytes]:
-        """Generate a private key and CSR for the domains."""
+        """
+        Generate RSA private key and Certificate Signing Request for domains.
+
+        Args:
+            domains: List of domain names for the certificate
+
+        Returns:
+            tuple: (private_key_pem, csr_pem) as bytes
+        """
         private_key = rsa.generate_private_key(
             public_exponent=65537, key_size=2048, backend=default_backend()
         )
@@ -173,7 +205,16 @@ class CertificateManager:
 
     @retry_with_backoff(max_attempts=3, base_delay=10, exceptions=(Exception,))
     def _create_dns_record(self, domain: str, validation: str) -> str:
-        """Create DNS TXT record for ACME challenge."""
+        """
+        Create DNS TXT record for ACME DNS-01 challenge validation.
+
+        Args:
+            domain: Domain name for the challenge
+            validation: ACME challenge validation string
+
+        Returns:
+            str: DNS record name that was created
+        """
         record_name = f"_acme-challenge.{domain}"
 
         change_batch = {
@@ -190,7 +231,7 @@ class CertificateManager:
             ]
         }
 
-        response = route53_client.change_resource_record_sets(
+        response = self.route53_client.change_resource_record_sets(
             HostedZoneId=HOSTED_ZONE_ID, ChangeBatch=change_batch
         )
 
@@ -198,14 +239,20 @@ class CertificateManager:
         logger.info(f"Created DNS record {record_name}, change ID: {change_id}")
 
         # Wait for DNS propagation
-        waiter = route53_client.get_waiter("resource_record_sets_changed")
+        waiter = self.route53_client.get_waiter("resource_record_sets_changed")
         waiter.wait(Id=change_id, WaiterConfig={"Delay": 10, "MaxAttempts": 30})
         logger.info(f"DNS record {record_name} propagated")
 
         return record_name
 
     def _cleanup_dns_record(self, domain: str, validation: str) -> None:
-        """Remove DNS TXT record after challenge."""
+        """
+        Remove DNS TXT record after ACME challenge completion.
+
+        Args:
+            domain: Domain name for the challenge
+            validation: ACME challenge validation string
+        """
         record_name = f"_acme-challenge.{domain}"
 
         try:
@@ -223,7 +270,7 @@ class CertificateManager:
                 ]
             }
 
-            route53_client.change_resource_record_sets(
+            self.route53_client.change_resource_record_sets(
                 HostedZoneId=HOSTED_ZONE_ID, ChangeBatch=change_batch
             )
             logger.info(f"Cleaned up DNS record {record_name}")
@@ -233,7 +280,16 @@ class CertificateManager:
     def _perform_dns_challenge(
         self, order: messages.OrderResource, authz: messages.AuthorizationResource
     ) -> str:
-        """Perform DNS-01 challenge for a single authorization."""
+        """
+        Execute DNS-01 challenge for domain authorization.
+
+        Args:
+            order: ACME order resource
+            authz: Authorization resource for specific domain
+
+        Returns:
+            str: Challenge validation string for cleanup
+        """
         domain = authz.body.identifier.value
 
         # Find DNS-01 challenge
@@ -264,7 +320,15 @@ class CertificateManager:
         return validation
 
     def obtain_certificate(self, domains: list[str]) -> dict:
-        """Obtain a new certificate for the given domains."""
+        """
+        Request and obtain new TLS certificate from Let's Encrypt.
+
+        Args:
+            domains: List of domain names for the certificate
+
+        Returns:
+            dict: Certificate data including private key, certificate, chain, and metadata
+        """
         self.acme_client = self._register_account()
 
         # Generate key and CSR
@@ -335,23 +399,43 @@ class CertificateManager:
 
     @retry_with_backoff(max_attempts=2, base_delay=3, exceptions=(Exception,))
     def store_certificate(self, cert_data: dict) -> None:
-        """Store certificate in Secrets Manager."""
+        """
+        Store certificate data in AWS Secrets Manager.
+
+        Args:
+            cert_data: Dictionary containing certificate, private key, and metadata
+        """
         secret_name = f"{SECRET_NAME_PREFIX}-certificate"
         secret_value = json.dumps(cert_data)
-        secrets_client.put_secret_value(SecretId=secret_name, SecretString=secret_value)
+        self.secrets_client.put_secret_value(
+            SecretId=secret_name, SecretString=secret_value
+        )
         logger.info(f"Stored certificate in {secret_name}")
 
     def get_current_certificate(self) -> Optional[dict]:
-        """Get current certificate from Secrets Manager."""
+        """
+        Retrieve current certificate data from AWS Secrets Manager.
+
+        Returns:
+            Optional[dict]: Certificate data or None if not found
+        """
         secret_name = f"{SECRET_NAME_PREFIX}-certificate"
         try:
-            response = secrets_client.get_secret_value(SecretId=secret_name)
+            response = self.secrets_client.get_secret_value(SecretId=secret_name)
             return json.loads(response["SecretString"])
-        except secrets_client.exceptions.ResourceNotFoundException:
+        except self.secrets_client.exceptions.ResourceNotFoundException:
             return None
 
     def needs_renewal(self, cert_data: Optional[dict]) -> bool:
-        """Check if certificate needs renewal."""
+        """
+        Determine if certificate requires renewal based on expiry date.
+
+        Args:
+            cert_data: Certificate data dictionary or None
+
+        Returns:
+            bool: True if certificate needs renewal, False otherwise
+        """
         if not cert_data:
             return True
 
@@ -385,8 +469,14 @@ class CertificateManager:
             return True
 
 
-def send_notification(subject: str, message: str) -> None:
-    """Send SNS notification if configured."""
+def send_notification(sns_client, subject: str, message: str) -> None:
+    """Send notification via AWS SNS if topic is configured.
+
+    Args:
+        sns_client: Boto3 SNS client instance
+        subject: Notification subject line
+        message: Notification message body
+    """
     if sns_client and SNS_TOPIC_ARN:
         try:
             sns_client.publish(TopicArn=SNS_TOPIC_ARN, Subject=subject, Message=message)
@@ -397,7 +487,15 @@ def send_notification(subject: str, message: str) -> None:
 
 @logger.inject_lambda_context(log_event=True)
 def lambda_handler(event: dict, context: LambdaContext) -> dict:
-    """Lambda entry point."""
+    """AWS Lambda function entry point for certificate management.
+
+    Args:
+        event: Lambda event data (supports 'force_renewal' parameter)
+        context: Lambda runtime context
+
+    Returns:
+        dict: Response with status code and operation result
+    """
     logger.info(f"Starting certificate check/renewal for domains: {DOMAINS}")
 
     force_renewal = event.get("force_renewal", False)
@@ -426,6 +524,7 @@ def lambda_handler(event: dict, context: LambdaContext) -> dict:
 
         # Send success notification
         send_notification(
+            manager.sns_client,
             subject=f"Certificate renewed for {DOMAINS[0]}",
             message=f"Successfully renewed certificate for domains: {', '.join(DOMAINS)}",
         )
@@ -446,6 +545,7 @@ def lambda_handler(event: dict, context: LambdaContext) -> dict:
 
         # Send failure notification
         send_notification(
+            manager.sns_client,
             subject=f"Certificate renewal FAILED for {DOMAINS[0]}",
             message=f"Failed to renew certificate for {', '.join(DOMAINS)}.\nError: {str(e)}",
         )
