@@ -1,7 +1,7 @@
 # aws-certbot-lambda
 
 [![Python 3.11](https://img.shields.io/badge/python-3.11-blue.svg)](https://www.python.org/downloads/release/python-3110/)
-[![Terraform](https://img.shields.io/badge/terraform-%3E%3D1.0-purple.svg)](https://www.terraform.io/)
+[![Terraform](https://img.shields.io/badge/terraform-~>%201.12.1-purple.svg)](https://www.terraform.io/)
 [![MIT license](https://img.shields.io/badge/License-MIT-blue.svg)](https://lbesson.mit-license.org/)
 
 Serverless TLS certificate renewal using Let's Encrypt ACME protocol. Runs as an AWS Lambda function with Route53 DNS-01 challenges and stores certificates in Secrets Manager. Deployed with Terraform.
@@ -20,7 +20,7 @@ Serverless TLS certificate renewal using Let's Encrypt ACME protocol. Runs as an
 
 - AWS account with appropriate permissions
 - Route53 hosted zone for your domain
-- Terraform >= 1.0
+- Terraform ~> 1.12.1
 - Python 3.11 and pip (for local Lambda layer building)
 
 ## Architecture
