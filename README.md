@@ -207,7 +207,6 @@ aws secretsmanager get-secret-value \
   --query SecretString --output text | jq -r .private_key > key.pem
 ```
 
-
-
-# TODO
-- Store generating certificate data in AWS ACM
+## TODO
+- Add a feature that enables the storage of certificate-generating data in AWS ACM.
+- Add pytest test-cases
