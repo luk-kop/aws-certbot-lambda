@@ -4,7 +4,7 @@ import os
 import time
 from datetime import datetime, timedelta, timezone
 from functools import wraps
-from typing import Optional
+from typing import Any, Optional
 
 import boto3
 from acme import challenges, client, errors, messages
@@ -20,7 +20,7 @@ logger = Logger()
 logging.getLogger("botocore").setLevel(logging.WARNING)
 
 
-def retry_with_backoff(max_attempts=3, base_delay=5, exceptions=(Exception,)):
+def retry_with_backoff(max_attempts=3, base_delay=5, exceptions=(IOError, ValueError)):
     """
     Decorator that retries function calls with exponential backoff.
 
@@ -44,17 +44,20 @@ def retry_with_backoff(max_attempts=3, base_delay=5, exceptions=(Exception,)):
                         f"{func.__name__} failed (attempt {attempt}/{max_attempts}): {e}. Retrying in {delay}s"
                     )
                     time.sleep(delay)
+                except BaseException:
+                    raise
 
         return wrapper
 
     return decorator
 
 
+# Environment variables
 ACME_DIRECTORY_URL = os.environ.get(
     "ACME_DIRECTORY_URL", "https://acme-v02.api.letsencrypt.org/directory"
 )
 ACME_EMAIL = os.environ.get("ACME_EMAIL", "")
-DOMAINS = os.environ["DOMAINS"].split(",")
+DOMAINS = [d.strip() for d in os.environ["DOMAINS"].split(",")]
 HOSTED_ZONE_ID = os.environ["HOSTED_ZONE_ID"]
 SECRET_NAME_PREFIX = os.environ["SECRET_NAME_PREFIX"]
 RENEWAL_DAYS_BEFORE_EXPIRY = int(os.environ.get("RENEWAL_DAYS_BEFORE_EXPIRY", "30"))
@@ -62,6 +65,16 @@ SNS_TOPIC_ARN = os.environ.get("SNS_TOPIC_ARN", "")
 POWERTOOLS_SERVICE_NAME = os.environ.get(
     "POWERTOOLS_SERVICE_NAME", "aws-certbot-lambda"
 )
+RSA_KEY_SIZE = int(os.environ.get("RSA_KEY_SIZE", "2048"))
+DNS_PROPAGATION_WAIT_SECONDS = int(os.environ.get("DNS_PROPAGATION_WAIT_SECONDS", "30"))
+
+# Validate environment variables
+if not DOMAINS or not DOMAINS[0]:
+    raise ValueError("DOMAINS environment variable must not be empty")
+if RENEWAL_DAYS_BEFORE_EXPIRY <= 0:
+    raise ValueError("RENEWAL_DAYS_BEFORE_EXPIRY must be positive")
+if not HOSTED_ZONE_ID.startswith(("Z", "/hostedzone/")):
+    raise ValueError(f"Invalid HOSTED_ZONE_ID format: {HOSTED_ZONE_ID}")
 
 
 class CertificateManager:
@@ -72,12 +85,12 @@ class CertificateManager:
     and AWS Secrets Manager for certificate persistence.
     """
 
-    secrets_client = boto3.client("secretsmanager")
-    route53_client = boto3.client("route53")
-    sns_client = boto3.client("sns") if SNS_TOPIC_ARN else None
-
     def __init__(self):
+        self.secrets_client = boto3.client("secretsmanager")
+        self.route53_client = boto3.client("route53")
+        self.sns_client = boto3.client("sns") if SNS_TOPIC_ARN else None
         self.acme_client: Optional[client.ClientV2] = None
+        self.cleanup_errors: list[str] = []
         self.account_key = self._get_or_create_account_key()
 
     def _get_or_create_account_key(self) -> JWKRSA:
@@ -107,7 +120,7 @@ class CertificateManager:
             logger.warning(f"Invalid account key, generating new one: {e}")
 
         private_key = rsa.generate_private_key(
-            public_exponent=65537, key_size=2048, backend=default_backend()
+            public_exponent=65537, key_size=RSA_KEY_SIZE, backend=default_backend()
         )
         key_pem = private_key.private_bytes(
             encoding=serialization.Encoding.PEM,
@@ -161,8 +174,8 @@ class CertificateManager:
             else:
                 logger.error("Could not extract account URL from ConflictError")
                 raise
-        except Exception as e:
-            logger.error(f"Unexpected error in account registration: {e}")
+        except (errors.Error, IOError, ValueError) as e:
+            logger.error(f"Error in account registration: {e}")
             raise
 
         return acme_client
@@ -178,7 +191,7 @@ class CertificateManager:
             tuple: (private_key_pem, csr_pem) as bytes
         """
         private_key = rsa.generate_private_key(
-            public_exponent=65537, key_size=2048, backend=default_backend()
+            public_exponent=65537, key_size=RSA_KEY_SIZE, backend=default_backend()
         )
 
         # Build CSR with SAN
@@ -203,7 +216,7 @@ class CertificateManager:
 
         return private_key_pem, csr.public_bytes(serialization.Encoding.PEM)
 
-    @retry_with_backoff(max_attempts=3, base_delay=10, exceptions=(Exception,))
+    @retry_with_backoff(max_attempts=3, base_delay=10, exceptions=(IOError, ValueError))
     def _create_dns_record(self, domain: str, validation: str) -> str:
         """
         Create DNS TXT record for ACME DNS-01 challenge validation.
@@ -274,8 +287,10 @@ class CertificateManager:
                 HostedZoneId=HOSTED_ZONE_ID, ChangeBatch=change_batch
             )
             logger.info(f"Cleaned up DNS record {record_name}")
-        except Exception as e:
-            logger.warning(f"Failed to cleanup DNS record {record_name}: {e}")
+        except (IOError, ValueError) as e:
+            error_msg = f"Failed to cleanup DNS record {record_name}: {e}"
+            logger.warning(error_msg)
+            self.cleanup_errors.append(error_msg)
 
     def _perform_dns_challenge(
         self, order: messages.OrderResource, authz: messages.AuthorizationResource
@@ -309,7 +324,7 @@ class CertificateManager:
         self._create_dns_record(domain, validation)
 
         # Additional wait for DNS propagation
-        time.sleep(30)
+        time.sleep(DNS_PROPAGATION_WAIT_SECONDS)
 
         # Answer the challenge
         self.acme_client.answer_challenge(
@@ -384,6 +399,7 @@ class CertificateManager:
 
         finally:
             # Cleanup DNS records
+            self.cleanup_errors = []
             for domain, validation in validations.items():
                 self._cleanup_dns_record(domain, validation)
 
@@ -397,7 +413,7 @@ class CertificateManager:
             "obtained_at": datetime.now(timezone.utc).isoformat(),
         }
 
-    @retry_with_backoff(max_attempts=2, base_delay=3, exceptions=(Exception,))
+    @retry_with_backoff(max_attempts=2, base_delay=3, exceptions=(IOError, ValueError))
     def store_certificate(self, cert_data: dict) -> None:
         """
         Store certificate data in AWS Secrets Manager.
@@ -425,6 +441,9 @@ class CertificateManager:
             return json.loads(response["SecretString"])
         except self.secrets_client.exceptions.ResourceNotFoundException:
             return None
+        except (ValueError, TypeError) as e:
+            logger.error(f"Error parsing certificate data: {e}")
+            return None
 
     def needs_renewal(self, cert_data: Optional[dict]) -> bool:
         """
@@ -448,8 +467,8 @@ class CertificateManager:
                 days_until_expiry = (expiry - datetime.now(timezone.utc)).days
                 logger.info(f"Certificate expires in {days_until_expiry} days")
                 return days_until_expiry <= RENEWAL_DAYS_BEFORE_EXPIRY
-            except (ValueError, KeyError):
-                pass
+            except (ValueError, KeyError) as e:
+                logger.warning(f"Error parsing stored expiry date: {e}")
 
         # Fallback to parsing certificate
         cert_pem = cert_data.get("certificate") or cert_data.get("fullchain")
@@ -464,16 +483,16 @@ class CertificateManager:
             logger.info(f"Certificate expires in {days_until_expiry} days")
 
             return days_until_expiry <= RENEWAL_DAYS_BEFORE_EXPIRY
-        except Exception as e:
+        except (ValueError, TypeError) as e:
             logger.error(f"Error checking certificate expiry: {e}")
             return True
 
 
-def send_notification(sns_client, subject: str, message: str) -> None:
+def send_notification(sns_client: Optional[Any], subject: str, message: str) -> None:
     """Send notification via AWS SNS if topic is configured.
 
     Args:
-        sns_client: Boto3 SNS client instance
+        sns_client: Boto3 SNS client instance or None
         subject: Notification subject line
         message: Notification message body
     """
@@ -481,7 +500,7 @@ def send_notification(sns_client, subject: str, message: str) -> None:
         try:
             sns_client.publish(TopicArn=SNS_TOPIC_ARN, Subject=subject, Message=message)
             logger.info(f"Sent notification: {subject}")
-        except Exception as e:
+        except (IOError, ValueError) as e:
             logger.error(f"Failed to send notification: {e}")
 
 
@@ -499,6 +518,7 @@ def lambda_handler(event: dict, context: LambdaContext) -> dict:
     logger.info(f"Starting certificate check/renewal for domains: {DOMAINS}")
 
     force_renewal = event.get("force_renewal", False)
+    manager = None
 
     try:
         manager = CertificateManager()
@@ -517,16 +537,25 @@ def lambda_handler(event: dict, context: LambdaContext) -> dict:
 
         # Obtain new certificate
         logger.info("Obtaining new certificate...")
-        cert_data = manager.obtain_certificate(DOMAINS)
+        cert_data: dict = manager.obtain_certificate(DOMAINS)
 
         # Store certificate
         manager.store_certificate(cert_data)
+
+        # Prepare success message
+        success_msg = (
+            f"Successfully renewed certificate for domains: {', '.join(DOMAINS)}"
+        )
+        if manager.cleanup_errors:
+            success_msg += "\n\nWarnings during cleanup:\n" + "\n".join(
+                manager.cleanup_errors
+            )
 
         # Send success notification
         send_notification(
             manager.sns_client,
             subject=f"Certificate renewed for {DOMAINS[0]}",
-            message=f"Successfully renewed certificate for domains: {', '.join(DOMAINS)}",
+            message=success_msg,
         )
 
         return {
@@ -540,15 +569,16 @@ def lambda_handler(event: dict, context: LambdaContext) -> dict:
             ),
         }
 
-    except Exception as e:
+    except (errors.Error, IOError, ValueError) as e:
         logger.error(f"Certificate renewal failed: {e}", exc_info=True)
 
         # Send failure notification
-        send_notification(
-            manager.sns_client,
-            subject=f"Certificate renewal FAILED for {DOMAINS[0]}",
-            message=f"Failed to renew certificate for {', '.join(DOMAINS)}.\nError: {str(e)}",
-        )
+        if manager:
+            send_notification(
+                manager.sns_client,
+                subject=f"Certificate renewal FAILED for {DOMAINS[0]}",
+                message=f"Failed to renew certificate for {', '.join(DOMAINS)}.\nError: {str(e)}",
+            )
 
         return {
             "statusCode": 500,

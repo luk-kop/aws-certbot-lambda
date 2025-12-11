@@ -206,3 +206,8 @@ aws secretsmanager get-secret-value \
   --secret-id aws-certbot-lambda-prod-certificate \
   --query SecretString --output text | jq -r .private_key > key.pem
 ```
+
+
+
+# TODO
+- Store generating certificate data in AWS ACM
