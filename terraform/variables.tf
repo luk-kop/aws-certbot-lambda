@@ -32,7 +32,7 @@ variable "hosted_zone_id" {
   type        = string
 }
 
-variable "use_staging" {
+variable "acme_use_staging" {
   description = "Use Let's Encrypt staging environment (for testing)"
   type        = bool
   default     = false
@@ -88,4 +88,10 @@ variable "lambda_layer_powertools_version" {
   description = "AWS Lambda Powertools layer version"
   type        = number
   default     = 18
+}
+
+variable "acme_persist_account_key" {
+  description = "Persist ACME account key in Secrets Manager (recommended for production to avoid rate limits)"
+  type        = bool
+  default     = true
 }

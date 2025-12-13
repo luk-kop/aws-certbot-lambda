@@ -13,7 +13,7 @@ domains    = ["example.com", "*.example.com"]
 hosted_zone_id = "Z1234567890ABC"
 
 # Use staging environment for testing (set to false for production)
-use_staging = true
+acme_use_staging = true
 
 # Renewal configuration
 renewal_days_before_expiry = 30
@@ -24,6 +24,9 @@ schedule_expression = "rate(12 hours)"
 # Notifications
 enable_notifications = true
 notification_email   = "admin@example.com"
+
+# ACME account key persistence (recommended: true for production)
+acme_persist_account_key = true
 
 # Additional tags
 additional_tags = {

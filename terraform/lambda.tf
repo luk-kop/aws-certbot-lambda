@@ -63,12 +63,12 @@ resource "aws_lambda_function" "this" {
       RENEWAL_DAYS_BEFORE_EXPIRY = tostring(var.renewal_days_before_expiry)
       SNS_TOPIC_ARN              = var.enable_notifications ? aws_sns_topic.notifications[0].arn : ""
       POWERTOOLS_SERVICE_NAME    = var.project_name
+      ACME_PERSIST_ACCOUNT_KEY   = tostring(var.acme_persist_account_key)
     }
   }
 
   depends_on = [
-    aws_secretsmanager_secret.certificate,
-    aws_secretsmanager_secret.account_key
+    aws_secretsmanager_secret.certificate
   ]
 }
 

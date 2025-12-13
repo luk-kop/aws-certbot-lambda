@@ -35,10 +35,10 @@ data "aws_iam_policy_document" "this" {
       "secretsmanager:UpdateSecret",
       "secretsmanager:PutSecretValue"
     ]
-    resources = [
-      aws_secretsmanager_secret.certificate.arn,
-      aws_secretsmanager_secret.account_key.arn
-    ]
+    resources = concat(
+      [aws_secretsmanager_secret.certificate.arn],
+      var.acme_persist_account_key ? [aws_secretsmanager_secret.account_key[0].arn] : []
+    )
   }
 
   # Route53 for DNS challenges

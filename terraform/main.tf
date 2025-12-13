@@ -8,6 +8,7 @@ resource "aws_secretsmanager_secret" "certificate" {
 }
 
 resource "aws_secretsmanager_secret" "account_key" {
+  count       = var.acme_persist_account_key ? 1 : 0
   name        = "${local.secret_name_prefix}-account-key"
   description = "ACME account private key for Let's Encrypt"
 }

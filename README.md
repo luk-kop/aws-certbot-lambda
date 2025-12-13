@@ -60,11 +60,19 @@ START
                │ expiring soon)            │ (skip)    │
                ▼                           └───────────┘
 ┌─────────────────────────────┐
-│ Load or create ACME         │
-│ account key                 │
-└──────────────┬──────────────┘
-               │
-               ▼
+│ persist_account_key=true?   │
+└──────┬──────────────┬───────┘
+       │ Yes          │ No
+       ▼              ▼
+┌──────────┐   ┌──────────────┐
+│ Load or  │   │ Create       │
+│ create   │   │ ephemeral    │
+│ from     │   │ account key  │
+│ Secrets  │   │              │
+└─────┬────┘   └──────┬───────┘
+      │               │
+      └───────┬───────┘
+              ▼
 ┌─────────────────────────────┐
 │ Register with Let's Encrypt │
 └──────────────┬──────────────┘
@@ -104,19 +112,29 @@ START
 
 ## Secrets Manager
 
-Two secrets are created by Terraform:
+Secrets created by Terraform:
 
-| Secret | Content | Purpose |
-|--------|---------|---------|
-| `{project}-{env}-certificate` | Certificate JSON (see format below) | Stores the TLS certificate, private key, and chain |
-| `{project}-{env}-certificate-account-key` | PEM-encoded RSA private key | ACME account key for Let's Encrypt registration |
+| Secret | Content | Purpose | Created When |
+|--------|---------|---------|-------------|
+| `{project}-{env}-certificate` | Certificate JSON (see format below) | Stores the TLS certificate, private key, and chain | Always |
+| `{project}-{env}-certificate-account-key` | PEM-encoded RSA private key | ACME account key for Let's Encrypt registration | Only if `acme_persist_account_key = true` (default) |
 
-**Why account key is stored separately?**
+**ACME Account Key Persistence**
 
-The **ACME account key** identifies your account with Let's Encrypt. Reusing the same key across renewals:
-- Maintains your account registration
-- Avoids hitting rate limits for new registrations
-- Required for certificate revocation if needed
+You can control whether the ACME account key is persisted using the `acme_persist_account_key` Terraform variable:
+
+- **`acme_persist_account_key = true` (default, recommended for production)**
+  - Account key is stored in Secrets Manager and reused across renewals
+  - Maintains your account registration with Let's Encrypt
+  - Avoids hitting rate limits for new registrations (10 per IP per 3 hours)
+  - Required for certificate revocation if needed
+  - Enables account history tracking
+
+- **`acme_persist_account_key = false` (ephemeral mode)**
+  - New account key is generated on every renewal
+  - Simpler architecture - one less secret to manage
+  - Useful for testing or specific use cases
+  - **Warning**: May hit Let's Encrypt rate limits with frequent renewals
 
 **Certificate JSON format:**
 
@@ -168,7 +186,7 @@ terraform plan
 terraform apply
 ```
 
-**Important:** Always test with Let's Encrypt staging environment first (`use_staging = true`). Production Let's Encrypt has strict [rate limits](https://letsencrypt.org/docs/rate-limits/) - you can only request 5 duplicate certificates per week.
+**Important:** Always test with Let's Encrypt staging environment first (`acme_use_staging = true`). Production Let's Encrypt has strict [rate limits](https://letsencrypt.org/docs/rate-limits/) - you can only request 5 duplicate certificates per week.
 
 ## Usage
 
@@ -206,6 +224,32 @@ aws secretsmanager get-secret-value \
   --secret-id aws-certbot-lambda-prod-certificate \
   --query SecretString --output text | jq -r .private_key > key.pem
 ```
+
+## Configuration Options
+
+### ACME Account Key Persistence
+
+Set `acme_persist_account_key = false` in your `terraform.tfvars` to use ephemeral account keys:
+
+```hcl
+acme_persist_account_key = false
+```
+
+This will:
+- Skip creating the account key secret in Secrets Manager
+- Generate a new account key on every certificate renewal
+- Reduce AWS costs slightly (one less secret)
+
+**When to use ephemeral mode:**
+- Testing and development environments
+- One-time certificate generation
+- When you don't need certificate revocation capabilities
+
+**When to use persistent mode (default):**
+- Production environments
+- Frequent certificate renewals
+- When you need to revoke certificates
+- To avoid Let's Encrypt rate limits
 
 ## TODO
 - Add a feature that enables the storage of certificate-generating data in AWS ACM.

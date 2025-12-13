@@ -4,7 +4,7 @@ import os
 import time
 from datetime import datetime, timedelta, timezone
 from functools import wraps
-from typing import Any, Optional
+from typing import Optional
 
 import boto3
 from acme import challenges, client, errors, messages
@@ -67,6 +67,9 @@ POWERTOOLS_SERVICE_NAME = os.environ.get(
 )
 RSA_KEY_SIZE = int(os.environ.get("RSA_KEY_SIZE", "2048"))
 DNS_PROPAGATION_WAIT_SECONDS = int(os.environ.get("DNS_PROPAGATION_WAIT_SECONDS", "30"))
+ACME_PERSIST_ACCOUNT_KEY = (
+    os.environ.get("ACME_PERSIST_ACCOUNT_KEY", "true").lower() == "true"
+)
 
 # Validate environment variables
 if not DOMAINS or not DOMAINS[0]:
@@ -88,14 +91,30 @@ class CertificateManager:
     def __init__(self):
         self.secrets_client = boto3.client("secretsmanager")
         self.route53_client = boto3.client("route53")
-        self.sns_client = boto3.client("sns") if SNS_TOPIC_ARN else None
         self.acme_client: Optional[client.ClientV2] = None
         self.cleanup_errors: list[str] = []
-        self.account_key = self._get_or_create_account_key()
+        self.account_key = (
+            self._get_or_create_account_key()
+            if ACME_PERSIST_ACCOUNT_KEY
+            else self._create_ephemeral_account_key()
+        )
+
+    def _create_ephemeral_account_key(self) -> JWKRSA:
+        """
+        Generate ephemeral ACME account key (not persisted).
+
+        Returns:
+            JWKRSA: JSON Web Key for ACME account authentication
+        """
+        logger.info("Creating ephemeral ACME account key")
+        private_key = rsa.generate_private_key(
+            public_exponent=65537, key_size=RSA_KEY_SIZE, backend=default_backend()
+        )
+        return JWKRSA(key=private_key)
 
     def _get_or_create_account_key(self) -> JWKRSA:
         """
-        Retrieve or generate ACME account key for Let's Encrypt registration.
+        Retrieve or generate persistent ACME account key for Let's Encrypt registration.
 
         Returns:
             JWKRSA: JSON Web Key for ACME account authentication
@@ -488,17 +507,18 @@ class CertificateManager:
             return True
 
 
-def send_notification(sns_client: Optional[Any], subject: str, message: str) -> None:
-    """Send notification via AWS SNS if topic is configured.
+def send_notification(topic_arn: str, subject: str, message: str) -> None:
+    """Send notification via AWS SNS if topic ARN is provided.
 
     Args:
-        sns_client: Boto3 SNS client instance or None
+        topic_arn: SNS topic ARN
         subject: Notification subject line
         message: Notification message body
     """
-    if sns_client and SNS_TOPIC_ARN:
+    if topic_arn:
         try:
-            sns_client.publish(TopicArn=SNS_TOPIC_ARN, Subject=subject, Message=message)
+            sns_client = boto3.client("sns")
+            sns_client.publish(TopicArn=topic_arn, Subject=subject, Message=message)
             logger.info(f"Sent notification: {subject}")
         except (IOError, ValueError) as e:
             logger.error(f"Failed to send notification: {e}")
@@ -553,7 +573,7 @@ def lambda_handler(event: dict, context: LambdaContext) -> dict:
 
         # Send success notification
         send_notification(
-            manager.sns_client,
+            topic_arn=SNS_TOPIC_ARN,
             subject=f"Certificate renewed for {DOMAINS[0]}",
             message=success_msg,
         )
@@ -573,12 +593,11 @@ def lambda_handler(event: dict, context: LambdaContext) -> dict:
         logger.error(f"Certificate renewal failed: {e}", exc_info=True)
 
         # Send failure notification
-        if manager:
-            send_notification(
-                manager.sns_client,
-                subject=f"Certificate renewal FAILED for {DOMAINS[0]}",
-                message=f"Failed to renew certificate for {', '.join(DOMAINS)}.\nError: {str(e)}",
-            )
+        send_notification(
+            topic_arn=SNS_TOPIC_ARN,
+            subject=f"Certificate renewal FAILED for {DOMAINS[0]}",
+            message=f"Failed to renew certificate for {', '.join(DOMAINS)}.\nError: {str(e)}",
+        )
 
         return {
             "statusCode": 500,
