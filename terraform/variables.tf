@@ -32,7 +32,7 @@ variable "hosted_zone_id" {
   type        = string
 }
 
-variable "use_staging" {
+variable "acme_use_staging" {
   description = "Use Let's Encrypt staging environment (for testing)"
   type        = bool
   default     = false
@@ -58,6 +58,12 @@ variable "enable_notifications" {
 
 variable "notification_email" {
   description = "Email address for certificate notifications"
+  type        = string
+  default     = ""
+}
+
+variable "eb_bus_name" {
+  description = "EventBridge bus name for publishing certificate events (empty to disable)"
   type        = string
   default     = ""
 }
@@ -88,4 +94,10 @@ variable "lambda_layer_powertools_version" {
   description = "AWS Lambda Powertools layer version"
   type        = number
   default     = 18
+}
+
+variable "acme_persist_account_key" {
+  description = "Persist ACME account key in Secrets Manager (recommended for production to avoid rate limits)"
+  type        = bool
+  default     = true
 }

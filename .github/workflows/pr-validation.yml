@@ -1,16 +1,20 @@
 name: PR Validation
 
 on:
-  pull_request_target:
+  pull_request:
     types:
       - opened
       - edited
       - reopened
+      - synchronize
 
 jobs:
   validate-pr:
     name: Validate Pull Request
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
 
     steps:
       - uses: actions/checkout@v6
@@ -22,18 +26,24 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Label PR
-        uses: actions/labeler@v4
-        with:
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
-
       - name: Check file sizes
         run: |
-          # Check for large files
-          find . -type f -size +1M -exec ls -lh {} \; | awk '{print $9 ": " $5}'
+          # Check for large files (excluding .git)
+          find . -path ./.git -prune -o -type f -size +1M -exec ls -lh {} \; | awk '{print $9 ": " $5}'
 
-          # Fail if files larger than 10MB
-          if find . -type f -size +10M | grep -q .; then
+          # Fail if files larger than 10MB (excluding .git)
+          if find . -path ./.git -prune -o -type f -size +10M -print | grep -q .; then
             echo "Error: Files larger than 10MB found"
             exit 1
           fi
+
+  labeler:
+    name: Label PR
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/labeler@v6
