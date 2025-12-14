@@ -62,6 +62,12 @@ variable "notification_email" {
   default     = ""
 }
 
+variable "eb_bus_name" {
+  description = "EventBridge bus name for publishing certificate events (empty to disable)"
+  type        = string
+  default     = ""
+}
+
 variable "additional_tags" {
   description = "Additional tags to set for all resources"
   type        = map(string)

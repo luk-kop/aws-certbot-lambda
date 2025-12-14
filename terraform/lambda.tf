@@ -57,11 +57,12 @@ resource "aws_lambda_function" "this" {
     variables = {
       ACME_DIRECTORY_URL         = local.acme_directory_url
       ACME_EMAIL                 = var.acme_email
-      DOMAINS                    = join(",", var.domains)
+      DOMAINS                    = jsonencode(var.domains)
       HOSTED_ZONE_ID             = var.hosted_zone_id
       SECRET_NAME_PREFIX         = local.secret_name_prefix
       RENEWAL_DAYS_BEFORE_EXPIRY = tostring(var.renewal_days_before_expiry)
       SNS_TOPIC_ARN              = var.enable_notifications ? aws_sns_topic.notifications[0].arn : ""
+      EB_BUS_NAME                = var.eb_bus_name
       POWERTOOLS_SERVICE_NAME    = var.project_name
       ACME_PERSIST_ACCOUNT_KEY   = tostring(var.acme_persist_account_key)
     }

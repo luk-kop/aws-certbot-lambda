@@ -33,7 +33,9 @@ data "aws_iam_policy_document" "this" {
       "secretsmanager:GetSecretValue",
       "secretsmanager:CreateSecret",
       "secretsmanager:UpdateSecret",
-      "secretsmanager:PutSecretValue"
+      "secretsmanager:PutSecretValue",
+      "secretsmanager:TagResource",
+      "secretsmanager:UntagResource"
     ]
     resources = concat(
       [aws_secretsmanager_secret.certificate.arn],
@@ -63,12 +65,26 @@ data "aws_iam_policy_document" "this" {
   # SNS for notifications (conditional)
   dynamic "statement" {
     for_each = var.enable_notifications ? [1] : []
+
     content {
       effect = "Allow"
       actions = [
         "sns:Publish"
       ]
       resources = [aws_sns_topic.notifications[0].arn]
+    }
+  }
+
+  # EventBridge for event publishing (conditional)
+  dynamic "statement" {
+    for_each = var.eb_bus_name != "" ? [1] : []
+
+    content {
+      effect = "Allow"
+      actions = [
+        "events:PutEvents"
+      ]
+      resources = ["arn:aws:events:${var.region}:*:event-bus/${var.eb_bus_name}"]
     }
   }
 }

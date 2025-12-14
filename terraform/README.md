@@ -52,6 +52,7 @@ No modules.
 | <a name="input_acme_use_staging"></a> [acme\_use\_staging](#input\_acme\_use\_staging) | Use Let's Encrypt staging environment (for testing) | `bool` | `false` | no |
 | <a name="input_additional_tags"></a> [additional\_tags](#input\_additional\_tags) | Additional tags to set for all resources | `map(string)` | `{}` | no |
 | <a name="input_domains"></a> [domains](#input\_domains) | List of domains to obtain certificates for | `list(string)` | n/a | yes |
+| <a name="input_eb_bus_name"></a> [eb\_bus\_name](#input\_eb\_bus\_name) | EventBridge bus name for publishing certificate events (empty to disable) | `string` | `""` | no |
 | <a name="input_enable_notifications"></a> [enable\_notifications](#input\_enable\_notifications) | Enable SNS notifications for certificate events | `bool` | `false` | no |
 | <a name="input_environment"></a> [environment](#input\_environment) | Environment name (e.g., prod, staging) | `string` | `"dev"` | no |
 | <a name="input_hosted_zone_id"></a> [hosted\_zone\_id](#input\_hosted\_zone\_id) | Route53 Hosted Zone ID for DNS challenges | `string` | n/a | yes |
