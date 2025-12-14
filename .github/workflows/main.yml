@@ -32,37 +32,17 @@ jobs:
       - name: Check-out code
         uses: actions/checkout@v6
 
-      - name: Detect dependency management
-        id: detect-deps
-        run: |
-          if [ -f "pyproject.toml" ]; then
-            echo "method=pyproject" >> $GITHUB_OUTPUT
-          elif [ -f "${{ env.PYTHON_DIR }}/requirements-dev.txt" ]; then
-            echo "method=requirements" >> $GITHUB_OUTPUT
-          else
-            echo "::error::No dependency files found (pyproject.toml or requirements-dev.txt)"
-            exit 1
-          fi
-
       - name: Set up Python
         uses: actions/setup-python@v6
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: 'pip'
 
-      - name: Install dependencies (pyproject.toml)
-        if: steps.detect-deps.outputs.method == 'pyproject'
-        run: |
-          python -m pip install --upgrade pip
-          pip install -e ".[test]"
-
       - name: Install dependencies (requirements.txt)
-        if: steps.detect-deps.outputs.method == 'requirements'
         working-directory: ${{ env.PYTHON_DIR }}
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          pip install -r requirements-dev.txt
 
       - name: Ruff check (linter)
         uses: astral-sh/ruff-action@v3
@@ -93,19 +73,6 @@ jobs:
             echo "::notice::Skipping tests - tests directory does not exist or is empty"
           fi
 
-      - name: Detect dependency management
-        if: steps.check-tests.outputs.exists == 'true'
-        id: detect-deps
-        run: |
-          if [ -f "pyproject.toml" ]; then
-            echo "method=pyproject" >> $GITHUB_OUTPUT
-          elif [ -f "${{ env.PYTHON_DIR }}/requirements-dev.txt" ]; then
-            echo "method=requirements" >> $GITHUB_OUTPUT
-          else
-            echo "::error::No dependency files found (pyproject.toml or requirements-dev.txt)"
-            exit 1
-          fi
-
       - name: Set up Python
         if: steps.check-tests.outputs.exists == 'true'
         uses: actions/setup-python@v6
@@ -113,19 +80,12 @@ jobs:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: 'pip'
 
+      # Test dependencies are declared in pyproject.toml
       - name: Install dependencies (pyproject.toml)
-        if: steps.check-tests.outputs.exists == 'true' && steps.detect-deps.outputs.method == 'pyproject'
+        if: steps.check-tests.outputs.exists == 'true'
         run: |
           python -m pip install --upgrade pip
           pip install -e ".[test]"
-
-      - name: Install dependencies (requirements.txt)
-        if: steps.check-tests.outputs.exists == 'true' && steps.detect-deps.outputs.method == 'requirements'
-        working-directory: ${{ env.PYTHON_DIR }}
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          pip install -r requirements-dev.txt
 
       - name: Run tests with pytest
         if: steps.check-tests.outputs.exists == 'true'
