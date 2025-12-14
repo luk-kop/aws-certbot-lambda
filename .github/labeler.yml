@@ -4,8 +4,7 @@ Workflows:
 
 Documentation:
 - changed-files:
-  - any-glob-to-any-file: images/**
-  - any-glob-to-any-file: '**/*.md'
+  - any-glob-to-any-file: ['images/**', '**/*.md']
 
 Terraform:
 - changed-files:
@@ -21,4 +20,4 @@ Pytest:
 
 Python:
 - changed-files:
-  - - any-glob-to-any-file: '**/*.py'
+  - any-glob-to-any-file: '**/*.py'
