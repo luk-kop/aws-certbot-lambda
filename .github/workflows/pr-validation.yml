@@ -6,6 +6,7 @@ on:
       - opened
       - edited
       - reopened
+      - synchronize
 
 jobs:
   validate-pr:
@@ -22,11 +23,6 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Label PR
-        uses: actions/labeler@v4
-        with:
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
-
       - name: Check file sizes
         run: |
           # Check for large files
@@ -37,3 +33,13 @@ jobs:
             echo "Error: Files larger than 10MB found"
             exit 1
           fi
+
+  labeler:
+    name: Label PR
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+
+    steps:
+      - uses: actions/labeler@v6
