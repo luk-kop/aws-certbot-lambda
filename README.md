@@ -195,7 +195,7 @@ You can control whether the ACME account key is persisted using the `acme_persis
 
 ## Lambda Layer Building
 
-The Lambda function requires Python dependencies (`acme`, `cryptography`, `josepy`, `boto3`) packaged as a Lambda layer. Terraform builds this layer locally during `terraform apply` using `uv pip install` with the `--platform manylinux2014_x86_64` flag to ensure compatibility with the Lambda runtime.
+The Lambda function requires Python dependencies (`acme`, `cryptography`, `josepy`, `boto3`) packaged as a Lambda layer. Terraform builds this layer locally during `terraform apply` using `uv pip install` with the `--python-platform x86_64-manylinux2014` flag to ensure compatibility with the Lambda runtime.
 
 **Why local building?**
 - Simple setup - no Docker or CI/CD pipeline required
