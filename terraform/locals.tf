@@ -7,6 +7,9 @@ locals {
   # Extract version number from runtime (e.g., "python3.11" -> "3.11")
   python_version = replace(var.python_runtime, "python", "")
 
+  # Map Lambda architecture to uv python-platform (for building Lambda layer)
+  uv_platform = var.lambda_architecture == "arm64" ? "aarch64-manylinux2014" : "x86_64-manylinux2014"
+
   tags = merge(
     var.additional_tags,
     {

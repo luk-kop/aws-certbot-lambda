@@ -1,3 +1,5 @@
+data "aws_caller_identity" "current" {}
+
 data "aws_iam_policy_document" "assume_role" {
   statement {
     effect = "Allow"
@@ -15,7 +17,7 @@ resource "aws_iam_role" "this" {
 }
 
 data "aws_iam_policy_document" "this" {
-  # CloudWatch Logs
+  # CloudWatch Logs (scoped to specific log group)
   statement {
     effect = "Allow"
     actions = [
@@ -23,7 +25,10 @@ data "aws_iam_policy_document" "this" {
       "logs:CreateLogStream",
       "logs:PutLogEvents"
     ]
-    resources = ["arn:aws:logs:*:*:*"]
+    resources = [
+      "arn:aws:logs:${var.region}:${data.aws_caller_identity.current.account_id}:log-group:/aws/lambda/${local.function_name}",
+      "arn:aws:logs:${var.region}:${data.aws_caller_identity.current.account_id}:log-group:/aws/lambda/${local.function_name}:*"
+    ]
   }
 
   # Secrets Manager

@@ -377,7 +377,7 @@ class TestCertificateRetrieval:
 
     @patch("lambda_function.boto3.client")
     def test_get_current_certificate_not_found(self, mock_boto_client, secrets_manager):
-        """Test retrieving non-existent certificate raises ValueError."""
+        """Test retrieving non-existent certificate returns None."""
         mock_boto_client.return_value = secrets_manager
 
         with patch.object(CertificateManager, "_get_or_create_account_key"):
@@ -386,8 +386,8 @@ class TestCertificateRetrieval:
                 acme_account_key_secret_name="test-key",
             )
 
-            with pytest.raises(ValueError, match="does not exist"):
-                manager.get_current_certificate()
+            result = manager.get_current_certificate()
+            assert result is None
 
     @patch("lambda_function.boto3.client")
     def test_get_current_certificate_invalid_json(

@@ -25,7 +25,7 @@ Serverless TLS certificate renewal using Let's Encrypt ACME protocol. Runs as an
 - AWS account with appropriate permissions
 - Route53 hosted zone for your domain
 - Terraform ~> 1.12.1
-- Python 3.11 and pip (for local Lambda layer building)
+- Python 3.11 and [uv](https://docs.astral.sh/uv/) (for local Lambda layer building)
 
 ## Architecture
 
@@ -195,16 +195,31 @@ You can control whether the ACME account key is persisted using the `acme_persis
 
 ## Lambda Layer Building
 
-The Lambda function requires Python dependencies (`acme`, `cryptography`, `josepy`, `boto3`) packaged as a Lambda layer. Terraform builds this layer locally during `terraform apply` using `pip install` with the `--platform manylinux2014_x86_64` flag to ensure compatibility with the Lambda runtime.
+The Lambda function requires Python dependencies (`acme`, `cryptography`, `josepy`, `boto3`) packaged as a Lambda layer. Terraform builds this layer locally during `terraform apply` using `uv pip install` with the `--python-platform x86_64-manylinux2014` flag to ensure compatibility with the Lambda runtime.
 
 **Why local building?**
 - Simple setup - no Docker or CI/CD pipeline required
-- Automatic rebuild when `requirements.txt` changes
+- Automatic rebuild when `pyproject.toml` changes
 - Suitable for single-function deployments
 
 **Requirements:**
-- Python 3.11 and pip installed locally
+- Python 3.11 and [uv](https://docs.astral.sh/uv/) installed locally
 - Internet access to download packages from PyPI
+
+**Known limitation:** Terraform uses `local-exec` provisioner to build the layer, which runs during `apply` phase. However, Terraform reads `layer.zip` during `plan` phase to compute hashes. If the file doesn't exist (fresh clone, path changes), `terraform plan` will fail.
+
+**Manual build** (when needed):
+```bash
+# From project root:
+uv lock  # if uv.lock doesn't exist
+uv export --package certbot-lambda --no-hashes --no-dev --frozen --no-emit-project -o lambdas/certbot/requirements.txt
+cd lambdas/certbot
+rm -rf python layer.zip
+mkdir -p python
+uv pip install -r requirements.txt --target python/ --python-platform x86_64-manylinux2014 --only-binary :all: --python-version 3.11
+rm requirements.txt
+zip -r layer.zip python
+```
 
 For production environments with stricter reproducibility needs, consider building the layer in CI/CD and storing it in S3.
 
@@ -226,7 +241,7 @@ terraform apply
 ### Invoke Lambda without force certificate renewal
 
 ```bash
-aws lambda invoke --function-name aws-certbot-lambda-prod \
+aws lambda invoke --function-name certbot-lambda-prod \
   --cli-binary-format raw-in-base64-out \
   --payload '{"force_renewal": false}' response.json
 ```
@@ -234,7 +249,7 @@ aws lambda invoke --function-name aws-certbot-lambda-prod \
 ### Force certificate renewal
 
 ```bash
-aws lambda invoke --function-name aws-certbot-lambda-prod \
+aws lambda invoke --function-name certbot-lambda-prod \
   --cli-binary-format raw-in-base64-out \
   --payload '{"force_renewal": true}' response.json
 ```
@@ -244,17 +259,17 @@ aws lambda invoke --function-name aws-certbot-lambda-prod \
 ```bash
 # Full JSON
 aws secretsmanager get-secret-value \
-  --secret-id aws-certbot-lambda-prod-certificate \
+  --secret-id certbot-lambda-prod-certificate \
   --query SecretString --output text | jq .
 
 # Certificate only
 aws secretsmanager get-secret-value \
-  --secret-id aws-certbot-lambda-prod-certificate \
+  --secret-id certbot-lambda-prod-certificate \
   --query SecretString --output text | jq -r .certificate > cert.pem
 
 # Private key only
 aws secretsmanager get-secret-value \
-  --secret-id aws-certbot-lambda-prod-certificate \
+  --secret-id certbot-lambda-prod-certificate \
   --query SecretString --output text | jq -r .private_key > key.pem
 ```
 
@@ -263,13 +278,42 @@ aws secretsmanager get-secret-value \
 ```bash
 # Get expiration date from secret tags (no decryption needed)
 aws secretsmanager describe-secret \
-  --secret-id aws-certbot-lambda-prod-certificate \
+  --secret-id certbot-lambda-prod-certificate \
   --query 'Tags[?Key==`ExpirationDate`].Value' --output text
 
 # Get certificate issue date
 aws secretsmanager describe-secret \
-  --secret-id aws-certbot-lambda-prod-certificate \
+  --secret-id certbot-lambda-prod-certificate \
   --query 'Tags[?Key==`IssuedAt`].Value' --output text
+```
+
+### View Lambda logs
+
+```bash
+# Tail logs in real-time (AWS CLI v2)
+aws logs tail /aws/lambda/certbot-lambda-prod --follow
+
+# Get recent log streams
+aws logs describe-log-streams \
+  --log-group-name /aws/lambda/certbot-lambda-prod \
+  --order-by LastEventTime \
+  --descending \
+  --limit 5
+
+# Get logs from a specific stream
+aws logs get-log-events \
+  --log-group-name /aws/lambda/certbot-lambda-prod \
+  --log-stream-name '<stream-name-from-above>'
+
+# Filter logs from last hour
+aws logs filter-log-events \
+  --log-group-name /aws/lambda/certbot-lambda-prod \
+  --start-time $(date -d '1 hour ago' +%s000)
+
+# Search for errors
+aws logs filter-log-events \
+  --log-group-name /aws/lambda/certbot-lambda-prod \
+  --filter-pattern "ERROR"
 ```
 
 ## Configuration Options
@@ -328,7 +372,7 @@ Success event (`Certificate Renewed`):
   "domains": ["example.com", "*.example.com"],
   "expiry": "2025-03-10T00:00:00+00:00",
   "issued_at": "2024-12-10T00:00:00+00:00",
-  "secret_name": "aws-certbot-lambda-prod-certificate"
+  "secret_name": "certbot-lambda-prod-certificate"
 }
 ```
 
@@ -338,11 +382,11 @@ Failure event (`Certificate Renewal Failed`):
   "status": "failed",
   "domains": ["example.com", "*.example.com"],
   "error": "Error message",
-  "secret_name": "aws-certbot-lambda-prod-certificate"
+  "secret_name": "certbot-lambda-prod-certificate"
 }
 ```
 
-Event source is the Lambda function name (e.g., `aws-certbot-lambda-prod`).
+Event source is the Lambda function name (e.g., `certbot-lambda-prod`).
 
 ## Environment Variables
 
@@ -365,21 +409,17 @@ The Lambda function uses the following environment variables (automatically conf
 
 ## Testing
 
-Unit tests are written using pytest. Run tests in a virtual environment:
+Unit tests are written using pytest. Run tests using [uv](https://docs.astral.sh/uv/):
 
 ```bash
-# Create and activate virtual environment
-python3 -m venv venv
-source venv/bin/activate
-
-# Install test dependencies
-pip install -e ".[test]"
+# Install workspace with test dependencies
+uv sync --all-packages --extra test
 
 # Run tests with coverage
-PYTHONPATH=./lambda pytest tests/ -v
+uv run pytest tests/ -v
 
 # Run tests with coverage report
-PYTHONPATH=./lambda pytest tests/ -v --cov=lambda --cov-report=term-missing
+uv run pytest tests/ -v --cov=lambdas/certbot --cov-report=term-missing
 ```
 
 Test coverage includes:
@@ -387,6 +427,38 @@ Test coverage includes:
 - `retry_with_backoff` decorator
 - `_validate_config` function
 - `send_notification` and `publish_event` functions
+
+## Adding a New Lambda
+
+This project uses [uv workspaces](https://docs.astral.sh/uv/concepts/projects/workspaces/) to manage multiple Lambda functions. To add a new Lambda:
+
+```bash
+# 1. Create directory
+mkdir -p lambdas/my-new-function
+
+# 2. Create pyproject.toml with dependencies
+cat > lambdas/my-new-function/pyproject.toml << 'EOF'
+[project]
+name = "my-new-function-lambda"
+version = "0.1.0"
+description = "Description of my new Lambda function"
+requires-python = ">=3.11"
+dependencies = [
+    "boto3~=1.42",
+]
+EOF
+
+# 3. Create Lambda handler
+cat > lambdas/my-new-function/lambda_function.py << 'EOF'
+def lambda_handler(event, context):
+    return {"statusCode": 200, "body": "Hello from my new Lambda!"}
+EOF
+
+# 4. Sync workspace to install dependencies
+uv sync --all-packages
+```
+
+Then create corresponding Terraform resources in `terraform/` for the new Lambda function.
 
 ## TODO
 - Add a feature that enables the storage of certificate-generating data in AWS ACM
