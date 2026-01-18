@@ -1,0 +1,11 @@
+[project]
+name = "certbot-lambda"
+version = "0.1.0"
+description = "Lambda function for automated TLS certificate renewal via Let's Encrypt"
+requires-python = ">=3.11"
+dependencies = [
+    "acme~=5.2",
+    "cryptography~=46.0",
+    "josepy~=2.2",
+    "boto3~=1.42",
+]

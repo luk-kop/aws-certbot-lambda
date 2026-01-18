@@ -2,11 +2,13 @@ import json
 import logging
 import os
 import time
+from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 from functools import wraps
-from typing import Optional
+from typing import Any, Optional, TypedDict, TypeVar
 
 import boto3
+from botocore.exceptions import ClientError
 from acme import challenges, client, errors, messages
 from cryptography import x509
 from cryptography.hazmat.backends import default_backend
@@ -19,20 +21,59 @@ from aws_lambda_powertools.utilities.typing import LambdaContext
 logger = Logger()
 logging.getLogger("botocore").setLevel(logging.WARNING)
 
+# Type definitions
+F = TypeVar("F", bound=Callable[..., Any])
 
-def retry_with_backoff(max_attempts=3, base_delay=5, exceptions=(IOError, ValueError)):
-    """
-    Decorator that retries function calls with exponential backoff.
+
+class CertificateData(TypedDict, total=False):
+    """Certificate data structure stored in Secrets Manager."""
+
+    private_key: str
+    certificate: str
+    chain: str
+    fullchain: str
+    expiry: str
+    domains: list[str]
+    issued_at: str
+
+
+class LambdaResponse(TypedDict):
+    """Lambda function response structure."""
+
+    statusCode: int
+    body: str
+
+
+def retry_with_backoff(
+    max_attempts: int = 3,
+    base_delay: int = 5,
+    exceptions: tuple[type[Exception], ...] = (ClientError, IOError, ValueError),
+) -> Callable[[F], F]:
+    """Decorator that retries function calls with exponential backoff.
+
+    Wraps a function to automatically retry on specified exceptions with
+    exponentially increasing delays between attempts.
 
     Args:
-        max_attempts: Maximum number of retry attempts
-        base_delay: Base delay in seconds between retries
-        exceptions: Tuple of exception types to catch and retry
+        max_attempts: Maximum number of retry attempts (default: 3).
+        base_delay: Base delay in seconds between retries (default: 5).
+            Actual delay doubles with each attempt: base_delay * 2^(attempt-1).
+        exceptions: Tuple of exception types to catch and retry (default:
+            ClientError, IOError, ValueError).
+
+    Returns:
+        Callable[[F], F]: Decorated function with retry behavior.
+
+    Example:
+        @retry_with_backoff(max_attempts=3, base_delay=5)
+        def flaky_operation():
+            # This will be retried up to 3 times with delays of 5s, 10s
+            pass
     """
 
-    def decorator(func):
+    def decorator(func: F) -> F:
         @wraps(func)
-        def wrapper(*args, **kwargs):
+        def wrapper(*args: Any, **kwargs: Any) -> Any:
             for attempt in range(1, max_attempts + 1):
                 try:
                     return func(*args, **kwargs)
@@ -46,8 +87,9 @@ def retry_with_backoff(max_attempts=3, base_delay=5, exceptions=(IOError, ValueE
                     time.sleep(delay)
                 except BaseException:
                     raise
+            return None  # unreachable, satisfies type checker
 
-        return wrapper
+        return wrapper  # type: ignore[return-value]
 
     return decorator
 
@@ -77,8 +119,16 @@ ACME_PERSIST_ACCOUNT_KEY = (
 
 
 def _validate_config() -> None:
-    """
-    Validate environment variables.
+    """Validate required environment variables for Lambda execution.
+
+    Checks that all required environment variables are set and have valid
+    values before proceeding with certificate operations.
+
+    Raises:
+        ValueError: If DOMAINS is empty or not set.
+        ValueError: If HOSTED_ZONE_ID is not set or has invalid format.
+        ValueError: If SECRET_NAME_PREFIX is not set.
+        ValueError: If RENEWAL_DAYS_BEFORE_EXPIRY is not positive.
     """
     if not DOMAINS or not DOMAINS[0]:
         raise ValueError("DOMAINS environment variable must not be empty")
@@ -93,25 +143,39 @@ def _validate_config() -> None:
 
 
 class CertificateManager:
-    """
-    Handles Let's Encrypt certificate lifecycle operations via ACME protocol.
+    """Handles Let's Encrypt certificate lifecycle operations via ACME protocol.
 
     Manages certificate issuance, renewal, and storage using Route53 DNS-01 challenges
     and AWS Secrets Manager for certificate persistence.
+
+    Attributes:
+        certificate_secret_name: Name of the Secrets Manager secret for certificate storage.
+        acme_account_key_secret_name: Name of the secret for ACME account key (if persistent).
+        account_key: JWKRSA key for ACME account authentication.
+        cleanup_errors: List of errors encountered during DNS record cleanup.
     """
 
     def __init__(
         self,
         certificate_secret_name: str,
         acme_account_key_secret_name: Optional[str] = None,
-    ):
+    ) -> None:
+        """Initialize CertificateManager with AWS clients and ACME account key.
+
+        Args:
+            certificate_secret_name: AWS Secrets Manager secret name for storing
+                the certificate data (must already exist).
+            acme_account_key_secret_name: Optional secret name for persisting the
+                ACME account key. If None, an ephemeral key is generated for each
+                invocation (not recommended for production due to rate limits).
+        """
         self._secrets_client = boto3.client("secretsmanager")
         self._route53_client = boto3.client("route53")
         self._acme_client: Optional[client.ClientV2] = None
         self.acme_account_key_secret_name = acme_account_key_secret_name
         self.certificate_secret_name = certificate_secret_name
         self.cleanup_errors: list[str] = []
-        self.account_key = (
+        self.account_key: JWKRSA = (
             self._get_or_create_account_key()
             if acme_account_key_secret_name
             else self._create_ephemeral_account_key()
@@ -251,17 +315,24 @@ class CertificateManager:
 
         return private_key_pem, csr.public_bytes(serialization.Encoding.PEM)
 
-    @retry_with_backoff(max_attempts=3, base_delay=10, exceptions=(IOError, ValueError))
+    @retry_with_backoff(
+        max_attempts=3, base_delay=10, exceptions=(ClientError, IOError, ValueError)
+    )
     def _create_dns_record(self, domain: str, validation: str) -> str:
-        """
-        Create DNS TXT record for ACME DNS-01 challenge validation.
+        """Create DNS TXT record for ACME DNS-01 challenge validation.
+
+        Creates a TXT record at _acme-challenge.{domain} with the validation
+        token and waits for Route53 to propagate the change.
 
         Args:
-            domain: Domain name for the challenge
-            validation: ACME challenge validation string
+            domain: Domain name for the challenge (e.g., "example.com").
+            validation: ACME challenge validation token string.
 
         Returns:
-            str: DNS record name that was created
+            str: Full DNS record name that was created (e.g., "_acme-challenge.example.com").
+
+        Raises:
+            ClientError: If Route53 API calls fail after retries.
         """
         record_name = f"_acme-challenge.{domain}"
 
@@ -294,12 +365,15 @@ class CertificateManager:
         return record_name
 
     def _cleanup_dns_record(self, domain: str, validation: str) -> None:
-        """
-        Remove DNS TXT record after ACME challenge completion.
+        """Remove DNS TXT record after ACME challenge completion.
+
+        Attempts to delete the challenge record. Failures are logged as warnings
+        and added to cleanup_errors rather than raising exceptions, to ensure
+        all cleanup attempts are made even if some fail.
 
         Args:
-            domain: Domain name for the challenge
-            validation: ACME challenge validation string
+            domain: Domain name for the challenge (e.g., "example.com").
+            validation: ACME challenge validation token that was used.
         """
         record_name = f"_acme-challenge.{domain}"
 
@@ -322,7 +396,7 @@ class CertificateManager:
                 HostedZoneId=HOSTED_ZONE_ID, ChangeBatch=change_batch
             )
             logger.info(f"Cleaned up DNS record {record_name}")
-        except (IOError, ValueError) as e:
+        except (ClientError, IOError, ValueError) as e:
             error_msg = f"Failed to cleanup DNS record {record_name}: {e}"
             logger.warning(error_msg)
             self.cleanup_errors.append(error_msg)
@@ -330,15 +404,20 @@ class CertificateManager:
     def _perform_dns_challenge(
         self, order: messages.OrderResource, authz: messages.AuthorizationResource
     ) -> str:
-        """
-        Execute DNS-01 challenge for domain authorization.
+        """Execute DNS-01 challenge for domain authorization.
+
+        Creates the DNS record, waits for propagation, and responds to the
+        ACME challenge.
 
         Args:
-            order: ACME order resource
-            authz: Authorization resource for specific domain
+            order: ACME order resource containing the certificate request.
+            authz: Authorization resource for the specific domain to validate.
 
         Returns:
-            str: Challenge validation string for cleanup
+            str: Challenge validation token for later cleanup.
+
+        Raises:
+            ValueError: If no DNS-01 challenge is available for the domain.
         """
         domain = authz.body.identifier.value
 
@@ -369,15 +448,27 @@ class CertificateManager:
 
         return validation
 
-    def issue_certificate(self, domains: list[str]) -> dict:
-        """
-        Issue new TLS certificate from Let's Encrypt.
+    def issue_certificate(self, domains: list[str]) -> CertificateData:
+        """Issue new TLS certificate from Let's Encrypt.
+
+        Performs the full ACME certificate issuance flow:
+        1. Registers/retrieves ACME account
+        2. Generates CSR with the specified domains
+        3. Creates DNS-01 challenge records in Route53
+        4. Completes ACME validation and obtains certificate
+        5. Cleans up DNS records
 
         Args:
-            domains: List of domain names for the certificate
+            domains: List of domain names for the certificate. The first domain
+                becomes the Common Name (CN), all domains are added as SANs.
 
         Returns:
-            dict: Certificate data including private key, certificate, chain, and metadata
+            CertificateData: Certificate data including private key, certificate,
+                chain, fullchain, expiry date, domains, and issuance timestamp.
+
+        Raises:
+            ValueError: If DNS-01 challenge is not available for a domain.
+            acme.errors.Error: If ACME protocol errors occur.
         """
         self._acme_client = self._register_account()
 
@@ -448,13 +539,21 @@ class CertificateManager:
             "issued_at": datetime.now(timezone.utc).isoformat(),
         }
 
-    @retry_with_backoff(max_attempts=2, base_delay=3, exceptions=(IOError, ValueError))
-    def store_certificate(self, cert_data: dict) -> None:
-        """
-        Store certificate data in AWS Secrets Manager with metadata tags.
+    @retry_with_backoff(
+        max_attempts=2, base_delay=3, exceptions=(ClientError, IOError, ValueError)
+    )
+    def store_certificate(self, cert_data: CertificateData) -> None:
+        """Store certificate data in AWS Secrets Manager with metadata tags.
+
+        Saves the certificate data as JSON and updates the secret's tags with
+        metadata for monitoring (expiration date, issuance date, domains).
 
         Args:
-            cert_data: Dictionary containing certificate, private key, and metadata
+            cert_data: Certificate data containing private key, certificate chain,
+                expiry date, and domain list.
+
+        Raises:
+            ClientError: If Secrets Manager operations fail after retries.
         """
         secret_value = json.dumps(cert_data)
         self._secrets_client.put_secret_value(
@@ -476,18 +575,18 @@ class CertificateManager:
                 SecretId=self.certificate_secret_name, Tags=tags
             )
             logger.info(f"Updated tags for {self.certificate_secret_name}")
-        except (IOError, ValueError) as e:
+        except (ClientError, IOError, ValueError) as e:
             logger.warning(f"Failed to update secret tags: {e}")
 
-    def get_current_certificate(self) -> Optional[dict]:
-        """
-        Retrieve current certificate data from AWS Secrets Manager.
+    def get_current_certificate(self) -> Optional[CertificateData]:
+        """Retrieve current certificate data from AWS Secrets Manager.
+
+        Fetches and validates the stored certificate data, ensuring all
+        required fields are present.
 
         Returns:
-            Optional[dict]: Certificate data or None if empty/invalid
-
-        Raises:
-            ValueError: If the secret does not exist (must be created by Terraform)
+            Optional[CertificateData]: Certificate data if valid, None if the
+                secret doesn't exist, has no value, or contains invalid data.
         """
         try:
             response = self._secrets_client.get_secret_value(
@@ -505,26 +604,30 @@ class CertificateManager:
 
             return data
         except self._secrets_client.exceptions.ResourceNotFoundException:
-            raise ValueError(
-                f"Certificate secret '{self.certificate_secret_name}' does not exist. "
-                "Ensure Terraform has been applied to create the required secrets."
+            # Secret doesn't exist or has no value (first run)
+            logger.info(
+                f"No existing certificate found in '{self.certificate_secret_name}'"
             )
-        except (ValueError, TypeError) as e:
+            return None
+        except (json.JSONDecodeError, ValueError, TypeError) as e:
             logger.error(f"Error parsing certificate data: {e}")
             return None
 
-    def needs_renewal(self, cert_data: Optional[dict]) -> bool:
-        """
-        Determine if certificate requires renewal based on expiry date.
+    def needs_renewal(self, cert_data: Optional[CertificateData]) -> bool:
+        """Determine if certificate requires renewal based on expiry date.
 
         Parses the actual certificate PEM to get the authoritative expiry date,
         rather than trusting the stored 'expiry' field which could be out of sync.
+        Logs a warning if there's a mismatch between stored and actual expiry.
 
         Args:
-            cert_data: Certificate data dictionary or None
+            cert_data: Certificate data dictionary or None. If None, returns True
+                (no certificate means renewal is needed).
 
         Returns:
-            bool: True if certificate needs renewal, False otherwise
+            bool: True if certificate needs renewal (expires within
+                RENEWAL_DAYS_BEFORE_EXPIRY days or is missing/invalid),
+                False otherwise.
         """
         if not cert_data:
             return True
@@ -576,18 +679,20 @@ def send_notification(topic_arn: str, subject: str, message: str) -> None:
         sns_client = boto3.client("sns")
         sns_client.publish(TopicArn=topic_arn, Subject=subject, Message=message)
         logger.info(f"Sent notification: {subject}")
-    except (IOError, ValueError) as e:
+    except (ClientError, IOError, ValueError) as e:
         logger.error(f"Failed to send notification: {e}")
 
 
-def publish_event(bus_name: str, source: str, detail_type: str, detail: dict) -> None:
-    """Publish event to EventBridge.
+def publish_event(
+    bus_name: str, source: str, detail_type: str, detail: dict[str, Any]
+) -> None:
+    """Publish event to EventBridge for downstream processing.
 
     Args:
-        bus_name: EventBridge bus name
-        source: Event source identifier
-        detail_type: Event detail type
-        detail: Event detail payload
+        bus_name: EventBridge bus name to publish to.
+        source: Event source identifier (typically the Lambda function name).
+        detail_type: Event detail type (e.g., "Certificate Renewed").
+        detail: Event detail payload as a dictionary (will be JSON-serialized).
     """
     try:
         events_client = boto3.client("events")
@@ -602,20 +707,38 @@ def publish_event(bus_name: str, source: str, detail_type: str, detail: dict) ->
             ]
         )
         logger.info(f"Published event: {detail_type} from source: {source}")
-    except (IOError, ValueError) as e:
+    except (ClientError, IOError, ValueError) as e:
         logger.error(f"Failed to publish event: {e}")
 
 
 @logger.inject_lambda_context(log_event=True)
-def lambda_handler(event: dict, context: LambdaContext) -> dict:
+def lambda_handler(event: dict[str, Any], context: LambdaContext) -> LambdaResponse:
     """AWS Lambda function entry point for certificate management.
 
+    Checks if the current certificate needs renewal and issues a new one if
+    necessary. Can be triggered by EventBridge schedule or manual invocation.
+
     Args:
-        event: Lambda event data (supports 'force_renewal' parameter)
-        context: Lambda runtime context
+        event: Lambda event data. Supports the following parameters:
+            - force_renewal (bool): If True, renews certificate regardless of
+              expiry date. Useful for testing or emergency re-issuance.
+        context: Lambda runtime context providing function metadata.
 
     Returns:
-        dict: Response with status code and operation result
+        LambdaResponse: Response with statusCode (200 for success, 500 for
+            failure) and JSON body containing operation result.
+
+    Environment Variables Required:
+        - DOMAINS: JSON array of domain names
+        - HOSTED_ZONE_ID: Route53 hosted zone ID
+        - SECRET_NAME_PREFIX: Prefix for Secrets Manager secret names
+        - RENEWAL_DAYS_BEFORE_EXPIRY: Days before expiry to trigger renewal
+
+    Optional Environment Variables:
+        - ACME_EMAIL: Email for Let's Encrypt account
+        - SNS_TOPIC_ARN: SNS topic for notifications
+        - EB_BUS_NAME: EventBridge bus for events
+        - ACME_PERSIST_ACCOUNT_KEY: Whether to persist ACME account key
     """
     _validate_config()
     logger.info(f"Starting certificate check/renewal for domains: {DOMAINS}")
@@ -648,7 +771,7 @@ def lambda_handler(event: dict, context: LambdaContext) -> dict:
 
         # Issue new certificate
         logger.info("Issuing new certificate...")
-        cert_data: dict = manager.issue_certificate(DOMAINS)
+        cert_data: CertificateData = manager.issue_certificate(DOMAINS)
 
         # Store certificate
         manager.store_certificate(cert_data)
@@ -696,7 +819,7 @@ def lambda_handler(event: dict, context: LambdaContext) -> dict:
             ),
         }
 
-    except (errors.Error, IOError, ValueError) as e:
+    except (errors.Error, ClientError, IOError, ValueError) as e:
         logger.error(f"Certificate renewal failed: {e}", exc_info=True)
 
         # Send failure notification

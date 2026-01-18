@@ -1,5 +1,6 @@
 # IDE
 .idea/
+.vscode/
 
 # Python
 __pycache__/
@@ -9,6 +10,7 @@ __pycache__/
 venv/
 *.egg-info/
 .ruff_cache/
+.python-version
 python/
 
 # Pytest

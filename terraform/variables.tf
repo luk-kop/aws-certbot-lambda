@@ -93,7 +93,7 @@ variable "lambda_architecture" {
 variable "lambda_layer_powertools_version" {
   description = "AWS Lambda Powertools layer version"
   type        = number
-  default     = 18
+  default     = 27
 }
 
 variable "acme_persist_account_key" {
