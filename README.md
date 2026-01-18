@@ -406,6 +406,7 @@ The Lambda function uses the following environment variables (automatically conf
 | `ACME_PERSIST_ACCOUNT_KEY` | Whether to persist ACME account key | `true` |
 | `RSA_KEY_SIZE` | RSA key size for certificates | `2048` |
 | `DNS_PROPAGATION_WAIT_SECONDS` | Additional DNS propagation wait time | `30` |
+| `DNS_TXT_TTL` | TTL for DNS TXT records in ACME challenges | `60` |
 
 ## Testing
 
@@ -461,5 +462,4 @@ uv sync --all-packages
 Then create corresponding Terraform resources in `terraform/` for the new Lambda function.
 
 ## TODO
-- Add a feature that enables the storage of certificate-generating data in AWS ACM
 - Add support for multiple Hosted Zones
