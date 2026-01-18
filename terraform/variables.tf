@@ -101,3 +101,9 @@ variable "acme_persist_account_key" {
   type        = bool
   default     = true
 }
+
+variable "dns_txt_ttl" {
+  description = "TTL for DNS TXT records used in ACME challenges (seconds)"
+  type        = number
+  default     = 60
+}

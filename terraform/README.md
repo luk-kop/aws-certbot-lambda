@@ -51,6 +51,7 @@ No modules.
 | <a name="input_acme_persist_account_key"></a> [acme\_persist\_account\_key](#input\_acme\_persist\_account\_key) | Persist ACME account key in Secrets Manager (recommended for production to avoid rate limits) | `bool` | `true` | no |
 | <a name="input_acme_use_staging"></a> [acme\_use\_staging](#input\_acme\_use\_staging) | Use Let's Encrypt staging environment (for testing) | `bool` | `false` | no |
 | <a name="input_additional_tags"></a> [additional\_tags](#input\_additional\_tags) | Additional tags to set for all resources | `map(string)` | `{}` | no |
+| <a name="input_dns_txt_ttl"></a> [dns\_txt\_ttl](#input\_dns\_txt\_ttl) | TTL for DNS TXT records used in ACME challenges (seconds) | `number` | `60` | no |
 | <a name="input_domains"></a> [domains](#input\_domains) | List of domains to obtain certificates for | `list(string)` | n/a | yes |
 | <a name="input_eb_bus_name"></a> [eb\_bus\_name](#input\_eb\_bus\_name) | EventBridge bus name for publishing certificate events (empty to disable) | `string` | `""` | no |
 | <a name="input_enable_notifications"></a> [enable\_notifications](#input\_enable\_notifications) | Enable SNS notifications for certificate events | `bool` | `false` | no |

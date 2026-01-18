@@ -101,6 +101,7 @@ resource "aws_lambda_function" "this" {
       EB_BUS_NAME                = var.eb_bus_name
       POWERTOOLS_SERVICE_NAME    = var.project_name
       ACME_PERSIST_ACCOUNT_KEY   = tostring(var.acme_persist_account_key)
+      DNS_TXT_TTL                = tostring(var.dns_txt_ttl)
     }
   }
 
