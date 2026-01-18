@@ -113,6 +113,7 @@ POWERTOOLS_SERVICE_NAME = os.environ.get(
 REQUIRED_CERT_KEYS = {"private_key", "certificate", "expiry", "domains"}
 RSA_KEY_SIZE = int(os.environ.get("RSA_KEY_SIZE", "2048"))
 DNS_PROPAGATION_WAIT_SECONDS = int(os.environ.get("DNS_PROPAGATION_WAIT_SECONDS", "30"))
+DNS_TXT_TTL = int(os.environ.get("DNS_TXT_TTL", "60"))
 ACME_PERSIST_ACCOUNT_KEY = (
     os.environ.get("ACME_PERSIST_ACCOUNT_KEY", "true").lower() == "true"
 )
@@ -343,7 +344,7 @@ class CertificateManager:
                     "ResourceRecordSet": {
                         "Name": record_name,
                         "Type": "TXT",
-                        "TTL": 60,
+                        "TTL": DNS_TXT_TTL,
                         "ResourceRecords": [{"Value": f'"{validation}"'}],
                     },
                 }
@@ -385,7 +386,7 @@ class CertificateManager:
                         "ResourceRecordSet": {
                             "Name": record_name,
                             "Type": "TXT",
-                            "TTL": 60,
+                            "TTL": DNS_TXT_TTL,
                             "ResourceRecords": [{"Value": f'"{validation}"'}],
                         },
                     }
