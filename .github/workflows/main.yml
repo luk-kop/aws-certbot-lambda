@@ -179,7 +179,7 @@ jobs:
 
       - name: Python Security Check (Bandit)
         run: |
-          uvx bandit@${{ env.BANDIT_VERSION }} -r ${{ env.LAMBDAS_DIR }} -f screen || true
+          uvx bandit@${{ env.BANDIT_VERSION }} -r ${{ env.LAMBDAS_DIR }} -f screen
 
       - name: Check for secrets (Gitleaks)
         uses: gitleaks/gitleaks-action@v2
