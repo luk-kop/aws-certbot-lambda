@@ -15,7 +15,7 @@ on:
   workflow_dispatch:
 
 env:
-  CERTBOT_LAMBDA_DIR: 'lambdas/certbot'
+  LAMBDAS_DIR: 'lambdas'
   UV_VERSION: '0.9.26'
   RUFF_VERSION: '0.14.13'
   BANDIT_VERSION: '1.9.3'
@@ -79,7 +79,7 @@ jobs:
           AWS_DEFAULT_REGION: 'us-east-1'
         run: |
           uv run pytest tests/ \
-            --cov=${{ env.CERTBOT_LAMBDA_DIR }} \
+            --cov=${{ env.LAMBDAS_DIR }} \
             --cov-report=xml \
             --cov-report=html \
             --cov-report=term-missing \
@@ -179,7 +179,7 @@ jobs:
 
       - name: Python Security Check (Bandit)
         run: |
-          uvx bandit@${{ env.BANDIT_VERSION }} -r . -f screen || true
+          uvx bandit@${{ env.BANDIT_VERSION }} -r ${{ env.LAMBDAS_DIR }} -f screen || true
 
       - name: Check for secrets (Gitleaks)
         uses: gitleaks/gitleaks-action@v2
