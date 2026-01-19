@@ -195,7 +195,7 @@ You can control whether the ACME account key is persisted using the `acme_persis
 
 ## Lambda Layer Building
 
-The Lambda function requires Python dependencies (`acme`, `cryptography`, `josepy`, `boto3`) packaged as a Lambda layer. Terraform builds this layer locally during `terraform apply` using `uv pip install` with the `--python-platform x86_64-manylinux2014` flag to ensure compatibility with the Lambda runtime.
+The Lambda function requires Python dependencies (`acme`, `cryptography`, `josepy`) packaged as a Lambda layer. Terraform builds this layer locally during `terraform apply` using `uv pip install` with the `--python-platform x86_64-manylinux2014` flag to ensure compatibility with the Lambda runtime.
 
 **Why local building?**
 - Simple setup - no Docker or CI/CD pipeline required
@@ -211,7 +211,7 @@ The Lambda function requires Python dependencies (`acme`, `cryptography`, `josep
 **Manual build** (when needed):
 ```bash
 # From project root:
-uv lock  # if uv.lock doesn't exist
+test -f uv.lock || uv lock
 uv export --package certbot-lambda --no-hashes --no-dev --frozen --no-emit-project -o lambdas/certbot/requirements.txt
 cd lambdas/certbot
 rm -rf python layer.zip
@@ -222,6 +222,8 @@ zip -r layer.zip python
 ```
 
 For production environments with stricter reproducibility needs, consider building the layer in CI/CD and storing it in S3.
+
+> **See also:** [Using uv with AWS Lambda](https://docs.astral.sh/uv/guides/integration/aws-lambda/)
 
 ## Deployment
 
@@ -460,6 +462,3 @@ uv sync --all-packages
 ```
 
 Then create corresponding Terraform resources in `terraform/` for the new Lambda function.
-
-## TODO
-- Add support for multiple Hosted Zones

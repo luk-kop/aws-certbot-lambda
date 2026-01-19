@@ -15,10 +15,10 @@ on:
   workflow_dispatch:
 
 env:
-  PYTHON_VERSION: '3.11'
-  CERTBOT_LAMBDA_DIR: 'lambdas/certbot'
-  UV_VERSION: '0.5'
+  LAMBDAS_DIR: 'lambdas'
+  UV_VERSION: '0.9.26'
   RUFF_VERSION: '0.14.13'
+  BANDIT_VERSION: '1.9.3'
   TF_VERSION: '1.12.1'
   TF_LINT_VERSION: 'latest'
   TF_DOCS_VERSION: 'latest'
@@ -32,19 +32,6 @@ jobs:
     steps:
       - name: Check-out code
         uses: actions/checkout@v6
-
-      - name: Set up uv
-        uses: astral-sh/setup-uv@v4
-        with:
-          version: ${{ env.UV_VERSION }}
-
-      - name: Set up Python
-        uses: actions/setup-python@v6
-        with:
-          python-version: ${{ env.PYTHON_VERSION }}
-
-      - name: Install dependencies (workspace)
-        run: uv sync --all-packages
 
       - name: Ruff check (linter)
         uses: astral-sh/ruff-action@v3
@@ -77,15 +64,9 @@ jobs:
 
       - name: Set up uv
         if: steps.check-tests.outputs.exists == 'true'
-        uses: astral-sh/setup-uv@v4
+        uses: astral-sh/setup-uv@v7
         with:
           version: ${{ env.UV_VERSION }}
-
-      - name: Set up Python
-        if: steps.check-tests.outputs.exists == 'true'
-        uses: actions/setup-python@v6
-        with:
-          python-version: ${{ env.PYTHON_VERSION }}
 
       # Test dependencies are declared in pyproject.toml
       - name: Install dependencies (workspace)
@@ -98,7 +79,7 @@ jobs:
           AWS_DEFAULT_REGION: 'us-east-1'
         run: |
           uv run pytest tests/ \
-            --cov=${{ env.CERTBOT_LAMBDA_DIR }} \
+            --cov=${{ env.LAMBDAS_DIR }} \
             --cov-report=xml \
             --cov-report=html \
             --cov-report=term-missing \
@@ -116,7 +97,7 @@ jobs:
         if: always() && steps.check-tests.outputs.exists == 'true'
         uses: actions/upload-artifact@v5
         with:
-          name: pytest-results-${{ env.PYTHON_VERSION }}
+          name: pytest-results
           path: |
             junit/test-results.xml
             htmlcov/
@@ -192,13 +173,13 @@ jobs:
           sarif_file: 'trivy-results.sarif'
 
       - name: Set up uv
-        uses: astral-sh/setup-uv@v4
+        uses: astral-sh/setup-uv@v7
         with:
           version: ${{ env.UV_VERSION }}
 
       - name: Python Security Check (Bandit)
         run: |
-          uvx bandit -r . -f json -o bandit-report.json || true
+          uvx bandit@${{ env.BANDIT_VERSION }} -r ${{ env.LAMBDAS_DIR }} -f screen
 
       - name: Check for secrets (Gitleaks)
         uses: gitleaks/gitleaks-action@v2
