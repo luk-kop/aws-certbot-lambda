@@ -8,6 +8,10 @@ on:
       - reopened
       - synchronize
 
+env:
+  WARN_SIZE: 1M
+  FAIL_SIZE: 10M
+
 jobs:
   validate-pr:
     name: Validate Pull Request
@@ -28,14 +32,26 @@ jobs:
 
       - name: Check file sizes
         run: |
-          # Check for large files (excluding .git)
-          find . -path ./.git -prune -o -type f -size +1M -exec ls -lh {} \; | awk '{print $9 ": " $5}'
+          echo "Checking for files larger than ${WARN_SIZE} (warning only)"
 
-          # Fail if files larger than 10MB (excluding .git)
-          if find . -path ./.git -prune -o -type f -size +10M -print | grep -q .; then
-            echo "Error: Files larger than 10MB found"
+          # List files > WARN_SIZE (excluding .git)
+          find . -path ./.git -prune -o -type f -size +${WARN_SIZE} -print0 \
+            | xargs -0 -r ls -lh \
+            | awk '{print "WARN:", $9, "(", $5, ")"}' || true
+
+          echo ""
+          echo "Failing PR if files larger than ${FAIL_SIZE} are found"
+
+          # Find files > FAIL_SIZE (excluding .git)
+          LARGE_FILES=$(find . -path ./.git -prune -o -type f -size +${FAIL_SIZE} -print)
+
+          if [ -n "$LARGE_FILES" ]; then
+            echo "ERROR: Files larger than ${FAIL_SIZE} detected:"
+            echo "$LARGE_FILES"
             exit 1
           fi
+
+          echo "File size check passed ✔"
 
   labeler:
     name: Label PR

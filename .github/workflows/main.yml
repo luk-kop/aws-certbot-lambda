@@ -15,9 +15,8 @@ on:
   workflow_dispatch:
 
 env:
-  PYTHON_VERSION: '3.11'
   CERTBOT_LAMBDA_DIR: 'lambdas/certbot'
-  UV_VERSION: '0.5'
+  UV_VERSION: '0.9.26'
   RUFF_VERSION: '0.14.13'
   TF_VERSION: '1.12.1'
   TF_LINT_VERSION: 'latest'
@@ -32,19 +31,6 @@ jobs:
     steps:
       - name: Check-out code
         uses: actions/checkout@v6
-
-      - name: Set up uv
-        uses: astral-sh/setup-uv@v4
-        with:
-          version: ${{ env.UV_VERSION }}
-
-      - name: Set up Python
-        uses: actions/setup-python@v6
-        with:
-          python-version: ${{ env.PYTHON_VERSION }}
-
-      - name: Install dependencies (workspace)
-        run: uv sync --all-packages
 
       - name: Ruff check (linter)
         uses: astral-sh/ruff-action@v3
@@ -77,15 +63,9 @@ jobs:
 
       - name: Set up uv
         if: steps.check-tests.outputs.exists == 'true'
-        uses: astral-sh/setup-uv@v4
+        uses: astral-sh/setup-uv@v7
         with:
           version: ${{ env.UV_VERSION }}
-
-      - name: Set up Python
-        if: steps.check-tests.outputs.exists == 'true'
-        uses: actions/setup-python@v6
-        with:
-          python-version: ${{ env.PYTHON_VERSION }}
 
       # Test dependencies are declared in pyproject.toml
       - name: Install dependencies (workspace)
@@ -116,7 +96,7 @@ jobs:
         if: always() && steps.check-tests.outputs.exists == 'true'
         uses: actions/upload-artifact@v5
         with:
-          name: pytest-results-${{ env.PYTHON_VERSION }}
+          name: pytest-results
           path: |
             junit/test-results.xml
             htmlcov/
@@ -192,13 +172,18 @@ jobs:
           sarif_file: 'trivy-results.sarif'
 
       - name: Set up uv
-        uses: astral-sh/setup-uv@v4
+        uses: astral-sh/setup-uv@v7
         with:
           version: ${{ env.UV_VERSION }}
 
       - name: Python Security Check (Bandit)
         run: |
-          uvx bandit -r . -f json -o bandit-report.json || true
+          uvx bandit -r . -f sarif -o bandit-report.sarif || true
+
+      - name: Upload Bandit results to GitHub Security
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: bandit-report.sarif
 
       - name: Check for secrets (Gitleaks)
         uses: gitleaks/gitleaks-action@v2

@@ -1,23 +1,32 @@
 Workflows:
-- changed-files:
-  - any-glob-to-any-file: .github/workflows/**
+  - changed-files:
+      - any-glob-to-any-file:
+          - .github/workflows/**
 
 Documentation:
-- changed-files:
-  - any-glob-to-any-file: ['images/**', '**/*.md']
+  - changed-files:
+      - any-glob-to-any-file:
+          - images/**
+          - "**/*.md"
+          - docs/**
 
 Terraform:
-- changed-files:
-  - any-glob-to-any-file: terraform/**
+  - changed-files:
+      - any-glob-to-any-file:
+          - terraform/**
 
 Lambda:
-- changed-files:
-  - any-glob-to-any-file: lambda/**
+  - changed-files:
+      - any-glob-to-any-file:
+          - lambda/**
 
 Pytest:
-- changed-files:
-  - any-glob-to-any-file: tests/**
+  - changed-files:
+      - any-glob-to-any-file:
+          - tests/**
 
 Python:
-- changed-files:
-  - any-glob-to-any-file: '**/*.py'
+  - changed-files:
+      - any-glob-to-any-file:
+          - "**/*.py"
+          - "!tests/**"
