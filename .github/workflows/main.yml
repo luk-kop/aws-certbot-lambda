@@ -16,7 +16,7 @@ on:
 
 env:
   LAMBDAS_DIR: 'lambdas'
-  UV_VERSION: '0.9.26'
+  UV_VERSION: '0.10.7'
   RUFF_VERSION: '0.15.4'
   BANDIT_VERSION: '1.9.4'
   TF_VERSION: '1.12.1'
