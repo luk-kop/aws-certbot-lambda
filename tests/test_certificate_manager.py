@@ -983,35 +983,36 @@ class TestCertificateIssuance:
                 with patch.object(
                     CertificateManager, "_perform_dns_challenge"
                 ) as mock_challenge:
-                    mock_acme_client = Mock()
+                    with patch.object(CertificateManager, "_validate_certificate_data"):
+                        mock_acme_client = Mock()
 
-                    # Create mock order with authorization
-                    mock_authz = Mock()
-                    mock_authz.body.identifier.value = "example.com"
-                    mock_authz.body.status.name = "valid"
+                        # Create mock order with authorization
+                        mock_authz = Mock()
+                        mock_authz.body.identifier.value = "example.com"
+                        mock_authz.body.status.name = "valid"
 
-                    mock_order = Mock()
-                    mock_order.authorizations = [mock_authz]
-                    mock_order.fullchain_pem = sample_certificate_pem
+                        mock_order = Mock()
+                        mock_order.authorizations = [mock_authz]
+                        mock_order.fullchain_pem = sample_certificate_pem
 
-                    mock_acme_client.new_order.return_value = mock_order
-                    mock_acme_client.poll_authorizations.return_value = mock_order
-                    mock_acme_client.finalize_order.return_value = mock_order
-                    mock_register.return_value = mock_acme_client
+                        mock_acme_client.new_order.return_value = mock_order
+                        mock_acme_client.poll_authorizations.return_value = mock_order
+                        mock_acme_client.finalize_order.return_value = mock_order
+                        mock_register.return_value = mock_acme_client
 
-                    mock_challenge.return_value = "test-validation"
+                        mock_challenge.return_value = "test-validation"
 
-                    manager = CertificateManager(
-                        certificate_secret_name="test-cert",
-                        acme_account_key_secret_name="test-key",
-                    )
+                        manager = CertificateManager(
+                            certificate_secret_name="test-cert",
+                            acme_account_key_secret_name="test-key",
+                        )
 
-                    result = manager.issue_certificate(["example.com"])
+                        result = manager.issue_certificate(["example.com"])
 
-                    assert "private_key" in result
-                    assert "certificate" in result
-                    assert "domains" in result
-                    assert result["domains"] == ["example.com"]
+                        assert "private_key" in result
+                        assert "certificate" in result
+                        assert "domains" in result
+                        assert result["domains"] == ["example.com"]
 
     @patch("lambda_function.boto3.client")
     @patch("lambda_function.time.sleep")
@@ -1070,3 +1071,270 @@ class TestCertificateIssuance:
                         if call[1]["ChangeBatch"]["Changes"][0]["Action"] == "DELETE"
                     ]
                     assert len(delete_calls) >= 1
+
+
+class TestValidateCertificatePem:
+    """Test PEM format validation."""
+
+    @patch("lambda_function.boto3.client")
+    def test_validate_valid_pem(
+        self,
+        mock_boto_client,
+        secrets_manager,
+        sample_private_key,
+        sample_certificate_pem,
+        sample_private_key_pem,
+    ):
+        """Test validation passes for valid matching key and certificate."""
+        mock_boto_client.return_value = secrets_manager
+
+        with patch.object(CertificateManager, "_get_or_create_account_key"):
+            manager = CertificateManager(
+                certificate_secret_name="test-cert",
+                acme_account_key_secret_name="test-key",
+            )
+
+            # Should not raise
+            manager._validate_certificate_data(
+                {
+                    "private_key": sample_private_key_pem,
+                    "certificate": sample_certificate_pem,
+                    "chain": "",
+                    "domains": ["example.com", "*.example.com"],
+                }
+            )
+
+    @patch("lambda_function.boto3.client")
+    def test_validate_invalid_private_key_pem(
+        self, mock_boto_client, secrets_manager, sample_certificate_pem
+    ):
+        """Test validation raises on invalid private key PEM."""
+        mock_boto_client.return_value = secrets_manager
+
+        with patch.object(CertificateManager, "_get_or_create_account_key"):
+            manager = CertificateManager(
+                certificate_secret_name="test-cert",
+                acme_account_key_secret_name="test-key",
+            )
+
+            with pytest.raises(ValueError, match="Invalid private key PEM"):
+                manager._validate_certificate_data(
+                    {
+                        "private_key": "not-a-valid-pem",
+                        "certificate": sample_certificate_pem,
+                        "chain": "",
+                        "domains": ["example.com"],
+                    }
+                )
+
+    @patch("lambda_function.boto3.client")
+    def test_validate_invalid_certificate_pem(
+        self, mock_boto_client, secrets_manager, sample_private_key_pem
+    ):
+        """Test validation raises on invalid certificate PEM."""
+        mock_boto_client.return_value = secrets_manager
+
+        with patch.object(CertificateManager, "_get_or_create_account_key"):
+            manager = CertificateManager(
+                certificate_secret_name="test-cert",
+                acme_account_key_secret_name="test-key",
+            )
+
+            with pytest.raises(ValueError, match="Invalid certificate PEM"):
+                manager._validate_certificate_data(
+                    {
+                        "private_key": sample_private_key_pem,
+                        "certificate": "not-a-valid-cert",
+                        "chain": "",
+                        "domains": ["example.com"],
+                    }
+                )
+
+    @patch("lambda_function.boto3.client")
+    def test_validate_key_mismatch(
+        self, mock_boto_client, secrets_manager, sample_certificate_pem
+    ):
+        """Test validation raises when private key doesn't match certificate."""
+        mock_boto_client.return_value = secrets_manager
+
+        from cryptography.hazmat.backends import default_backend
+        from cryptography.hazmat.primitives.asymmetric import rsa
+        from cryptography.hazmat.primitives import serialization
+
+        other_key = rsa.generate_private_key(
+            public_exponent=65537, key_size=2048, backend=default_backend()
+        )
+        other_key_pem = other_key.private_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PrivateFormat.PKCS8,
+            encryption_algorithm=serialization.NoEncryption(),
+        ).decode()
+
+        with patch.object(CertificateManager, "_get_or_create_account_key"):
+            manager = CertificateManager(
+                certificate_secret_name="test-cert",
+                acme_account_key_secret_name="test-key",
+            )
+
+            with pytest.raises(ValueError, match="Private key does not match"):
+                manager._validate_certificate_data(
+                    {
+                        "private_key": other_key_pem,
+                        "certificate": sample_certificate_pem,
+                        "chain": "",
+                        "domains": ["example.com", "*.example.com"],
+                    }
+                )
+
+    @patch("lambda_function.boto3.client")
+    def test_validate_missing_san(
+        self,
+        mock_boto_client,
+        secrets_manager,
+        sample_private_key_pem,
+        sample_certificate_pem,
+    ):
+        """Test validation raises when certificate is missing requested domains in SANs."""
+        mock_boto_client.return_value = secrets_manager
+
+        with patch.object(CertificateManager, "_get_or_create_account_key"):
+            manager = CertificateManager(
+                certificate_secret_name="test-cert",
+                acme_account_key_secret_name="test-key",
+            )
+
+            with pytest.raises(ValueError, match="Certificate missing SANs"):
+                manager._validate_certificate_data(
+                    {
+                        "private_key": sample_private_key_pem,
+                        "certificate": sample_certificate_pem,
+                        "chain": "",
+                        "domains": ["example.com", "*.example.com", "other.com"],
+                    }
+                )
+
+    @patch("lambda_function.boto3.client")
+    def test_validate_invalid_chain_pem(
+        self,
+        mock_boto_client,
+        secrets_manager,
+        sample_private_key_pem,
+        sample_certificate_pem,
+    ):
+        """Test validation raises on invalid chain certificate PEM."""
+        mock_boto_client.return_value = secrets_manager
+
+        with patch.object(CertificateManager, "_get_or_create_account_key"):
+            manager = CertificateManager(
+                certificate_secret_name="test-cert",
+                acme_account_key_secret_name="test-key",
+            )
+
+            with pytest.raises(ValueError, match="Invalid chain PEM"):
+                manager._validate_certificate_data(
+                    {
+                        "private_key": sample_private_key_pem,
+                        "certificate": sample_certificate_pem,
+                        "chain": "-----BEGIN CERTIFICATE-----\nbaddata\n-----END CERTIFICATE-----\n",
+                        "domains": ["example.com", "*.example.com"],
+                    }
+                )
+
+    @patch("lambda_function.boto3.client")
+    def test_validate_valid_chain(
+        self,
+        mock_boto_client,
+        secrets_manager,
+        sample_private_key_pem,
+        sample_certificate_pem,
+    ):
+        """Test validation passes with valid chain certificate."""
+        mock_boto_client.return_value = secrets_manager
+
+        with patch.object(CertificateManager, "_get_or_create_account_key"):
+            manager = CertificateManager(
+                certificate_secret_name="test-cert",
+                acme_account_key_secret_name="test-key",
+            )
+
+            manager._validate_certificate_data(
+                {
+                    "private_key": sample_private_key_pem,
+                    "certificate": sample_certificate_pem,
+                    "chain": sample_certificate_pem,
+                    "domains": ["example.com", "*.example.com"],
+                }
+            )
+
+    @patch("lambda_function.boto3.client")
+    def test_validate_empty_private_key(
+        self, mock_boto_client, secrets_manager, sample_certificate_pem
+    ):
+        """Test validation raises when private_key is empty."""
+        mock_boto_client.return_value = secrets_manager
+
+        with patch.object(CertificateManager, "_get_or_create_account_key"):
+            manager = CertificateManager(
+                certificate_secret_name="test-cert",
+                acme_account_key_secret_name="test-key",
+            )
+
+            with pytest.raises(ValueError, match="non-empty"):
+                manager._validate_certificate_data(
+                    {
+                        "private_key": "",
+                        "certificate": sample_certificate_pem,
+                        "chain": "",
+                        "domains": ["example.com"],
+                    }
+                )
+
+    @patch("lambda_function.boto3.client")
+    def test_validate_empty_certificate(
+        self, mock_boto_client, secrets_manager, sample_private_key_pem
+    ):
+        """Test validation raises when certificate is empty."""
+        mock_boto_client.return_value = secrets_manager
+
+        with patch.object(CertificateManager, "_get_or_create_account_key"):
+            manager = CertificateManager(
+                certificate_secret_name="test-cert",
+                acme_account_key_secret_name="test-key",
+            )
+
+            with pytest.raises(ValueError, match="non-empty"):
+                manager._validate_certificate_data(
+                    {
+                        "private_key": sample_private_key_pem,
+                        "certificate": "",
+                        "chain": "",
+                        "domains": ["example.com"],
+                    }
+                )
+
+    @patch("lambda_function.boto3.client")
+    def test_validate_empty_domains(
+        self,
+        mock_boto_client,
+        secrets_manager,
+        sample_private_key_pem,
+        sample_certificate_pem,
+    ):
+        """Test validation raises when domains list is empty."""
+        mock_boto_client.return_value = secrets_manager
+
+        with patch.object(CertificateManager, "_get_or_create_account_key"):
+            manager = CertificateManager(
+                certificate_secret_name="test-cert",
+                acme_account_key_secret_name="test-key",
+            )
+
+            with pytest.raises(ValueError, match="non-empty"):
+                manager._validate_certificate_data(
+                    {
+                        "private_key": sample_private_key_pem,
+                        "certificate": sample_certificate_pem,
+                        "chain": "",
+                        "domains": [],
+                    }
+                )

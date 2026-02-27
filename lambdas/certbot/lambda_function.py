@@ -512,17 +512,25 @@ class CertificateManager:
             logger.info("Certificate issued successfully")
 
             # Parse certificate to extract expiry and separate chain
-            certs = fullchain_pem.split("-----END CERTIFICATE-----")
-            certificate = certs[0] + "-----END CERTIFICATE-----\n"
-            chain = "-----END CERTIFICATE-----".join(certs[1:]).strip()
-            if chain:
-                chain = chain + "\n"
-
-            # Extract expiry from certificate
-            cert = x509.load_pem_x509_certificate(
-                certificate.encode(), default_backend()
+            certs = x509.load_pem_x509_certificates(fullchain_pem.encode())
+            if not certs:
+                raise ValueError("No certificates found in fullchain PEM")
+            certificate = certs[0].public_bytes(serialization.Encoding.PEM).decode()
+            chain = "".join(
+                c.public_bytes(serialization.Encoding.PEM).decode() for c in certs[1:]
             )
-            expiry = cert.not_valid_after_utc.isoformat()
+
+            # Validate PEM format and consistency before trusting any cert data
+            cert_data: CertificateData = {
+                "private_key": private_key_pem.decode(),
+                "certificate": certificate,
+                "chain": chain,
+                "fullchain": fullchain_pem,
+                "expiry": certs[0].not_valid_after_utc.isoformat(),
+                "domains": domains,
+                "issued_at": datetime.now(timezone.utc).isoformat(),
+            }
+            self._validate_certificate_data(cert_data)
 
         finally:
             # Cleanup DNS records
@@ -530,15 +538,7 @@ class CertificateManager:
             for domain, validation in validations.items():
                 self._cleanup_dns_record(domain, validation)
 
-        return {
-            "private_key": private_key_pem.decode(),
-            "certificate": certificate,
-            "chain": chain,
-            "fullchain": fullchain_pem,
-            "expiry": expiry,
-            "domains": domains,
-            "issued_at": datetime.now(timezone.utc).isoformat(),
-        }
+        return cert_data
 
     @retry_with_backoff(
         max_attempts=2, base_delay=3, exceptions=(ClientError, IOError, ValueError)
@@ -613,6 +613,82 @@ class CertificateManager:
         except (json.JSONDecodeError, ValueError, TypeError) as e:
             logger.error(f"Error parsing certificate data: {e}")
             return None
+
+    def _validate_certificate_data(self, cert_data: CertificateData) -> None:
+        """Validate PEM format and consistency of issued certificate data.
+
+        Checks that:
+        - Private key PEM is loadable and is an RSA key
+        - Certificate PEM is loadable and contains all requested domains in SANs
+        - Private key matches the certificate's public key
+        - Chain PEM (if present) contains valid certificates
+
+        Args:
+            cert_data: CertificateData containing private_key, certificate,
+                chain, and domains fields.
+
+        Raises:
+            ValueError: If any PEM component is malformed or inconsistent.
+        """
+        private_key_pem = cert_data["private_key"].encode()
+        certificate = cert_data["certificate"]
+        chain = cert_data.get("chain", "")
+        domains = cert_data["domains"]
+
+        if not private_key_pem or not certificate or not domains:
+            raise ValueError(
+                "cert_data must contain non-empty private_key, certificate, and domains"
+            )
+
+        # Validate private key
+        try:
+            key = serialization.load_pem_private_key(
+                private_key_pem, password=None, backend=default_backend()
+            )
+        except (ValueError, TypeError, UnicodeDecodeError) as e:
+            raise ValueError(f"Invalid private key PEM: {e}") from e
+
+        if not isinstance(key, rsa.RSAPrivateKey):
+            raise ValueError(f"Expected RSA private key, got {type(key).__name__}")
+
+        # Validate leaf certificate
+        try:
+            cert = x509.load_pem_x509_certificate(certificate.encode())
+        except (ValueError, TypeError) as e:
+            raise ValueError(f"Invalid certificate PEM: {e}") from e
+
+        # Check private key matches certificate public key
+        if cert.public_key().public_numbers() != key.public_key().public_numbers():
+            raise ValueError("Private key does not match certificate public key")
+
+        # Check all requested domains are in the certificate SANs
+        try:
+            san_ext = cert.extensions.get_extension_for_class(
+                x509.SubjectAlternativeName
+            )
+            cert_domains = set(san_ext.value.get_values_for_type(x509.DNSName))
+        except x509.ExtensionNotFound:
+            cert_domains = set()
+
+        missing = set(domains) - cert_domains
+        if missing:
+            raise ValueError(f"Certificate missing SANs for domains: {missing}")
+
+        logger.info(f"Certificate SANs validated for domains: {cert_domains}")
+
+        # Validate chain certs if present
+        if chain.strip():
+            try:
+                chain_certs = x509.load_pem_x509_certificates(chain.encode())
+            except (ValueError, TypeError) as e:
+                raise ValueError(f"Invalid chain PEM: {e}") from e
+
+            if not chain_certs:
+                raise ValueError("Chain PEM contains no valid certificates")
+
+            logger.info(
+                f"Chain validated: {len(chain_certs)} intermediate certificate(s)"
+            )
 
     def needs_renewal(self, cert_data: Optional[CertificateData]) -> bool:
         """Determine if certificate requires renewal based on expiry date.

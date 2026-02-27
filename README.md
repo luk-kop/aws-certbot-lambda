@@ -29,7 +29,7 @@ Serverless TLS certificate renewal using Let's Encrypt ACME protocol. Runs as an
 
 ## Architecture
 
-```
+```txt
 ┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
 │  EventBridge    │────▶│  Lambda         │────▶│  Let's Encrypt  │
 │  (Schedule)     │     │  (Python 3.11)  │     │  ACME Server    │
@@ -45,7 +45,7 @@ Serverless TLS certificate renewal using Let's Encrypt ACME protocol. Runs as an
 
 ## Lambda Function Logic
 
-```
+```text
 START
   │
   ▼
@@ -121,13 +121,14 @@ START
               END
 ```
 
-**Certificate renewal triggers:**
+### Certificate renewal triggers:
+
 - Secret is empty (first run)
 - Certificate field is missing or invalid
 - Certificate expires within 30 days (configurable via `RENEWAL_DAYS_BEFORE_EXPIRY`)
 - `force_renewal: true` in event payload
 
-**Note:** Expiry is always determined by parsing the actual certificate PEM, not the stored `expiry` field. This ensures the certificate itself is the source of truth. If the stored `expiry` field doesn't match the actual certificate expiry, a warning is logged.
+> **Note:** Expiry is always determined by parsing the actual certificate PEM, not the stored `expiry` field. This ensures the certificate itself is the source of truth. If the stored `expiry` field doesn't match the actual certificate expiry, a warning is logged.
 
 ## Secrets Manager
 
@@ -140,7 +141,7 @@ Secrets created by Terraform:
 | `{project}-{env}-certificate` | Certificate JSON (see format below) | Stores the TLS certificate, private key, and chain | Always |
 | `{project}-{env}-account-key` | PEM-encoded RSA private key | ACME account key for Let's Encrypt registration | Only if `acme_persist_account_key = true` (default) |
 
-**Certificate Secret Tags**
+### Certificate Secret Tags
 
 The certificate secret is automatically tagged with metadata on each renewal:
 
@@ -152,7 +153,7 @@ The certificate secret is automatically tagged with metadata on each renewal:
 
 These tags enable monitoring and alerting without decrypting the secret value.
 
-**ACME Account Key Persistence**
+### ACME Account Key Persistence
 
 You can control whether the ACME account key is persisted using the `acme_persist_account_key` Terraform variable:
 
@@ -169,7 +170,7 @@ You can control whether the ACME account key is persisted using the `acme_persis
   - Useful for testing or specific use cases
   - **Warning**: May hit Let's Encrypt rate limits with frequent renewals
 
-**Certificate JSON format:**
+### Certificate JSON format
 
 ```json
 {
@@ -197,18 +198,21 @@ You can control whether the ACME account key is persisted using the `acme_persis
 
 The Lambda function requires Python dependencies (`acme`, `cryptography`, `josepy`) packaged as a Lambda layer. Terraform builds this layer locally during `terraform apply` using `uv pip install` with the `--python-platform x86_64-manylinux2014` flag to ensure compatibility with the Lambda runtime.
 
-**Why local building?**
+### Why local building?
+
 - Simple setup - no Docker or CI/CD pipeline required
 - Automatic rebuild when `pyproject.toml` changes
 - Suitable for single-function deployments
 
-**Requirements:**
+### Requirements
+
 - Python 3.11 and [uv](https://docs.astral.sh/uv/) installed locally
 - Internet access to download packages from PyPI
 
 **Known limitation:** Terraform uses `local-exec` provisioner to build the layer, which runs during `apply` phase. However, Terraform reads `layer.zip` during `plan` phase to compute hashes. If the file doesn't exist (fresh clone, path changes), `terraform plan` will fail.
 
 **Manual build** (when needed):
+
 ```bash
 # From project root:
 test -f uv.lock || uv lock
@@ -216,7 +220,7 @@ uv export --package certbot-lambda --no-hashes --no-dev --frozen --no-emit-proje
 cd lambdas/certbot
 rm -rf python layer.zip
 mkdir -p python
-uv pip install -r requirements.txt --target python/ --python-platform x86_64-manylinux2014 --only-binary :all: --python-version 3.11
+uv pip install -r requirements.txt --target python/ --python-platform x86_64-manylinux2014 --only-binary :all: --python-version 3.11  # use aarch64-manylinux2014 for arm64
 rm requirements.txt
 zip -r layer.zip python
 ```
@@ -320,7 +324,7 @@ aws logs filter-log-events \
 
 ## Configuration Options
 
-### ACME Account Key Persistence
+### Configuring ACME Account Key Persistence
 
 Set `acme_persist_account_key = false` in your `terraform.tfvars` to use ephemeral account keys:
 
@@ -329,20 +333,33 @@ acme_persist_account_key = false
 ```
 
 This will:
+
 - Skip creating the account key secret in Secrets Manager
 - Generate a new account key on every certificate renewal
 - Reduce AWS costs slightly (one less secret)
 
-**When to use ephemeral mode:**
+### When to use ephemeral mode
+
 - Testing and development environments
 - One-time certificate generation
 - When you don't need certificate revocation capabilities
 
-**When to use persistent mode (default):**
+### When to use persistent mode (default)
+
 - Production environments
 - Frequent certificate renewals
 - When you need to revoke certificates
 - To avoid Let's Encrypt rate limits
+
+### Lambda Architecture
+
+Set `lambda_architecture` in your `terraform.tfvars` to target arm64 (Graviton) instead of the default x86_64:
+
+```hcl
+lambda_architecture = "arm64"
+```
+
+Valid values are `x86_64` (default) and `arm64`. When using arm64, Terraform automatically builds the Lambda layer with the correct `aarch64-manylinux2014` platform target.
 
 ### SNS Notifications
 
@@ -354,6 +371,7 @@ notification_email   = "admin@example.com"
 ```
 
 Notifications are sent for:
+
 - Successful certificate renewals
 - Failed certificate renewals
 
@@ -365,9 +383,10 @@ Publish certificate events to EventBridge for integration with other AWS service
 eb_bus_name = "default"  # or your custom event bus name
 ```
 
-**Event Details:**
+### Event Details
 
 Success event (`Certificate Renewed`):
+
 ```json
 {
   "status": "success",
@@ -379,6 +398,7 @@ Success event (`Certificate Renewed`):
 ```
 
 Failure event (`Certificate Renewal Failed`):
+
 ```json
 {
   "status": "failed",
@@ -426,6 +446,7 @@ uv run pytest tests/ -v --cov=lambdas/certbot --cov-report=term-missing
 ```
 
 Test coverage includes:
+
 - `CertificateManager` class (initialization, account keys, CSR generation, DNS challenges, certificate issuance/storage/retrieval)
 - `retry_with_backoff` decorator
 - `_validate_config` function
