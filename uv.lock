@@ -26,7 +26,7 @@ wheels = [
 
 [[package]]
 name = "aws-certbot-lambda"
-version = "0.1.0"
+version = "0.1.1"
 source = { virtual = "." }
 
 [package.optional-dependencies]
@@ -40,11 +40,11 @@ test = [
 
 [package.metadata]
 requires-dist = [
-    { name = "aws-lambda-powertools", marker = "extra == 'test'", specifier = ">=2.31" },
-    { name = "moto", extras = ["secretsmanager", "route53"], marker = "extra == 'test'", specifier = ">=4.2" },
-    { name = "pytest", marker = "extra == 'test'", specifier = ">=7.4" },
-    { name = "pytest-cov", marker = "extra == 'test'", specifier = ">=4.1" },
-    { name = "pytest-mock", marker = "extra == 'test'", specifier = ">=3.12" },
+    { name = "aws-lambda-powertools", marker = "extra == 'test'", specifier = ">=3.24" },
+    { name = "moto", extras = ["secretsmanager", "route53"], marker = "extra == 'test'", specifier = ">=5.1" },
+    { name = "pytest", marker = "extra == 'test'", specifier = ">=9.0" },
+    { name = "pytest-cov", marker = "extra == 'test'", specifier = ">=7.0" },
+    { name = "pytest-mock", marker = "extra == 'test'", specifier = ">=3.15" },
 ]
 provides-extras = ["test"]
 
